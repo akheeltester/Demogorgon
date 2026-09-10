@@ -2,7 +2,7 @@
 
 ## Comparison Framework
 
-Compare Sentinel V2 against established tools on identical targets.
+Compare Demogorgon against established tools on identical targets.
 
 ---
 
@@ -10,7 +10,7 @@ Compare Sentinel V2 against established tools on identical targets.
 
 | Tool | Purpose | Strength | Weakness |
 |---|---|---|---|
-| **Sentinel V2** | Autonomous bug bounty hunter | End-to-end: recon → test → report | LLM-dependent, unvalidated |
+| **Demogorgon** | Autonomous bug bounty hunter | End-to-end: recon → test → report | LLM-dependent, unvalidated |
 | **Burp Suite Pro** | Web vulnerability scanner | Deep crawling, active scanning, proven | Manual setup, not autonomous |
 | **Katana** | Web crawler | Fast, headless/non-headless, recursive | Crawl only, no vuln detection |
 | **Feroxbuster** | Directory fuzzer | Fast, recursive, filter patterns | No auth, no JS rendering |
@@ -37,7 +37,7 @@ Compare Sentinel V2 against established tools on identical targets.
 
 ### Expected Results by Tool
 
-| Capability | Sentinel V2 | Burp Suite | Katana | Feroxbuster | Nuclei | Gau | ffuf |
+| Capability | Demogorgon | Burp Suite | Katana | Feroxbuster | Nuclei | Gau | ffuf |
 |---|---|---|---|---|---|---|---|
 | Crawl pages | Browser render | Deep crawl | Fast crawl | Dir brute | Template match | Historical | N/A |
 | Discover endpoints | ~7 (homepage) | 50+ | 100+ | 200+ (dirs) | Template endpoints | 1000+ | 200+ |
@@ -48,7 +48,7 @@ Compare Sentinel V2 against established tools on identical targets.
 | Report quality | Markdown | Professional | None | None | JSON | None | None |
 | Runtime | ~5min | 30min+ | 1min | 2min | 5min | 30s | 1min |
 
-### Sentinel V2 Advantages over Traditional Tools
+### Demogorgon Advantages over Traditional Tools
 
 1. **JS rendering** — Can discover SPA routes invisible to crawlers
 2. **Business logic understanding** — LLM can identify workflows and ownership
@@ -56,7 +56,7 @@ Compare Sentinel V2 against established tools on identical targets.
 4. **End-to-end** — Single command from recon to report
 5. **Adaptive** — Can change strategy based on findings
 
-### Sentinel V2 Disadvantages over Traditional Tools
+### Demogorgon Disadvantages over Traditional Tools
 
 1. **No deterministic crawling** — Relies on LLM to choose pages
 2. **No brute-force discovery** — No wordlist-based directory scanning
@@ -82,7 +82,7 @@ Compare Sentinel V2 against established tools on identical targets.
 
 ### Expected Results by Tool
 
-| Capability | Sentinel V2 | Burp Suite | Nuclei | Katana |
+| Capability | Demogorgon | Burp Suite | Nuclei | Katana |
 |---|---|---|---|---|
 | Discover API endpoints | ~5 (if LLM navigates) | 100+ | Template-based | 200+ |
 | Extract __NEXT_DATA__ | YES (if called) | Partial | No | No |
@@ -108,7 +108,7 @@ Compare Sentinel V2 against established tools on identical targets.
 
 ### Expected Results by Tool
 
-| Capability | Sentinel V2 | Burp Suite | Nuclei | ffuf |
+| Capability | Demogorgon | Burp Suite | Nuclei | ffuf |
 |---|---|---|---|---|
 | Discover API endpoints | ~5 (if LLM navigates) | 50+ | Template | 100+ |
 | Test IDOR | Multi-session replay | Manual | Template | No |
@@ -131,7 +131,7 @@ Compare Sentinel V2 against established tools on identical targets.
 
 ### Expected Results by Tool
 
-| Capability | Sentinel V2 | Burp Suite | Nuclei | Katana |
+| Capability | Demogorgon | Burp Suite | Nuclei | Katana |
 |---|---|---|---|---|
 | Schema introspection | graphql_introspect() (if called) | Extensions | Template | No |
 | Query batching | graphql_test_batching() (if called) | Extensions | No | No |
@@ -142,7 +142,7 @@ Compare Sentinel V2 against established tools on identical targets.
 
 ## Comparison Summary
 
-| Dimension | Sentinel V2 | Traditional Tools |
+| Dimension | Demogorgon | Traditional Tools |
 |---|---|---|
 | **Setup time** | 1 command | Configure per tool |
 | **Recon quality** | Unknown (LLM-dependent) | Proven (deterministic) |
@@ -159,9 +159,9 @@ Compare Sentinel V2 against established tools on identical targets.
 
 ## Key Insight
 
-Sentinel V2's unique value proposition is **autonomous business logic understanding + adaptive testing**. Traditional tools are better at **deterministic discovery + pattern matching**. The ideal approach combines both.
+Demogorgon's unique value proposition is **autonomous business logic understanding + adaptive testing**. Traditional tools are better at **deterministic discovery + pattern matching**. The ideal approach combines both.
 
-Sentinel V2 should NOT try to replace Burp Suite or Nuclei. It should:
+Demogorgon should NOT try to replace Burp Suite or Nuclei. It should:
 1. Use deterministic tools (ffuf, httpx, katana) for endpoint discovery
 2. Use LLM for business logic understanding and hypothesis generation
 3. Use replay engine for mutation testing

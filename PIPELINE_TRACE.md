@@ -3,7 +3,7 @@
 ## Command
 
 ```bash
-python -m sentinel_v2 https://target.com
+python -m demogorgon https://target.com
 ```
 
 ---

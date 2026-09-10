@@ -1,128 +1,232 @@
-# Sentinel V2
+<div align="center">
 
-Autonomous bug bounty hunting tool powered by LLM reasoning. Sentinel doesn't just scan — it **thinks**. It forms hypotheses, designs experiments, executes them, and evaluates results like a senior pentester.
+```
+ ██████╗ ███████╗ ██████╗ ██████╗ ███████╗ ██████╗ ███╗   ██╗ ██████╗
+██╔════╝ ██╔════╝██╔═══██╗██╔══██╗██╔════╝██╔═══██╗████╗  ██║██╔═══██╗
+██║  ███╗█████╗  ██║   ██║██║  ██║█████╗  ██║   ██║██╔██╗ ██║██║   ██║
+██║   ██║██╔══╝  ██║   ██║██║  ██║██╔══╝  ██║   ██║██║╚██╗██║██║   ██║
+╚██████╔╝███████╗╚██████╔╝██████╔╝███████╗╚██████╔╝██║ ╚████║╚██████╔╝
+ ╚═════╝ ╚══════╝ ╚═════╝ ╚═════╝ ╚══════╝ ╚═════╝ ╚═╝  ╚═══╝ ╚═════╝
+```
 
-## Features
+### **Autonomous Bug Bounty Hunter Powered by LLM Reasoning**
 
-- **LLM-Powered Reasoning** — Uses OpenRouter (free models available) to make intelligent testing decisions
-- **8-Stage Hunt Pipeline** — Product understanding → endpoint discovery → hypothesis generation → experiment design → execution → evidence collection → finding validation → reporting
-- **Browser Automation** — Persistent Playwright session with auto-capture of requests, tokens, forms, and JS state
-- **Auth Testing** — Multi-session IDOR, privilege escalation, role-based access, and boundary testing
-- **Deterministic Detectors** — Pattern-based detection for SQLi, XSS, info disclosure, SSTI, and CORS misconfigurations
-- **HTTP Replay** — Replay captured requests with mutations (auth bypass, CSRF, method override, etc.)
+[![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)](https://python.org)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/Status-Active-brightred)](https://github.com/akheeltester/Demogorgon)
+
+---
+
+**Demogorgon** doesn't just scan — it **thinks**. It forms hypotheses, designs experiments,
+executes them, and evaluates results like a senior penetration tester.
+
+</div>
+
+---
+
+## How It Works
+
+```
+  TARGET URL
+      │
+      ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    DEMOGORGON PIPELINE                          │
+├─────────────┬──────────────┬──────────────┬────────────────────┤
+│  STAGE 1    │   STAGE 2    │   STAGE 3    │     STAGE 4        │
+│  DISCOVER   │   UNDERSTAND │   HYPOTHESIZE│     EXECUTE        │
+│             │              │              │                    │
+│ • Browser   │ • Product    │ • IDOR       │ • HTTP Replay      │
+│ • Endpoints │   Type       │ • XSS        │ • Auth Bypass      │
+│ • JS/API    │ • Roles      │ • SSRF       │ • CSRF             │
+│ • Forms     │ • Workflows  │ • SQLi       │ • Race Conditions  │
+│ • Tokens    │ • Trust      │ • Logic      │ • File Upload      │
+│             │   Boundaries │ • Priv Esc   │ • SSTI / XXE       │
+├─────────────┴──────────────┴──────────────┴────────────────────┤
+│                    EVIDENCE → FINDINGS → REPORT                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
 
 ## Quick Start
 
+### 1. Clone & Setup (one command)
+
 ```bash
-# Clone
-git clone https://github.com/Akheel-Org/Organism.git
-cd Organism/bugbounty-tool
-
-# Setup (one command)
+git clone https://github.com/akheeltester/Demogorgon.git
+cd Demogorgon
 bash setup.sh
-
-# Activate
-source venv/bin/activate
-
-# Configure API key (free at https://openrouter.ai/keys)
-cp .env.example .env
-# Edit .env and add: OPENROUTER_API_KEY=sk-or-v1-...
-
-# Hunt a target
-python -m sentinel_v2 https://target.com
-
-# Hunt with V3 autonomous researcher
-python -m sentinel_v2 https://target.com --v3
-
-# Route through Burp Suite
-python -m sentinel_v2 https://target.com --proxy http://127.0.0.1:8080
 ```
 
-## Test with Juice Shop
+### 2. Configure API Key (free)
 
-The fastest way to validate the tool:
+```bash
+# Get free key at: https://openrouter.ai/keys
+cp .env.example .env
+# Edit .env and paste your key:
+# OPENROUTER_API_KEY=sk-or-v1-your-key-here
+```
+
+### 3. Hunt
+
+```bash
+source venv/bin/activate
+
+# Basic hunt
+python -m demogorgon https://target.com
+
+# Autonomous V3 mode (parallel experiments)
+python -m demogorgon https://target.com --v3
+
+# Through Burp Suite proxy
+python -m demogorgon https://target.com --proxy http://127.0.0.1:8080
+
+# Custom iterations
+python -m demogorgon https://target.com --max-iterations 100
+```
+
+### 4. Test with Juice Shop (safe target)
 
 ```bash
 docker run -d -p 3000:3000 bkimminich/juice-shop
-python -m sentinel_v2 http://localhost:3000
+python -m demogorgon http://localhost:3000
 ```
 
-## Usage
+---
+
+## CLI Options
 
 ```
-python -m sentinel_v2 <target_url> [options]
+python -m demogorgon <target_url> [options]
 
-Options:
-  --headless          Run browser in headless mode (default: True)
-  --no-headless       Run browser with visible GUI
-  --proxy URL         Route traffic through a proxy (e.g., Burp Suite)
+  --headless          Run browser headless (default)
+  --no-headless       Show browser window
+  --proxy URL         Route through Burp/ZAP
   --rate-limit SECS  Delay between requests (default: 1.0)
-  --max-iterations N  Max reasoning iterations (default: 50)
+  --max-iterations N  Max reasoning loops (default: 50)
   --output DIR        Output directory (default: hunt_output)
   --v3                Use V3 autonomous researcher
-  --benchmark         Run benchmark mode against target
+  --benchmark         Run benchmark mode
 ```
 
-## Architecture
-
-```
-sentinel_v2/
-  main.py              — Entry point & CLI
-  researcher.py        — Core 8-stage hunt orchestrator
-  researcher_v3.py     — V3 autonomous researcher
-  memory.py            — Working memory (endpoints, findings, evidence)
-  app_model.py         — Application understanding model
-  llm_client.py        — OpenRouter LLM client with model rotation
-  detectors.py         — Deterministic vulnerability detectors
-  tools/
-    browser.py         — Playwright browser automation
-    http_client.py     — Async HTTP with rate limiting
-    replay.py          — HTTP replay with mutations
-  auth/
-    authcore/          — Multi-session auth testing library
-      session.py       — Auth sessions, cookies, JWT
-      store.py         — SQLite session store
-      idor_tester.py   — Cross-user IDOR testing
-      role_tester.py   — Role-based access testing
-      boundary_tester.py — Account boundary testing
-  executors/           — Vulnerability-specific executors
-    cors_detector.py
-    ssti_detector.py
-    info_disclosure_detector.py
-    auth_bypass_tester.py
-  programs/            — Per-target hunt data & findings
-```
+---
 
 ## Modules
 
-| Module | Purpose |
+```
+demogorgon/
+│
+├── main.py                 ← Entry point & CLI
+├── researcher.py           ← Core 8-stage hunt orchestrator
+├── researcher_v3.py        ← V3 autonomous controller
+├── memory.py               ← Working memory
+├── app_model.py            ← Application understanding
+├── llm_client.py           ← OpenRouter LLM client
+├── detectors.py            ← Deterministic vuln detectors
+│
+├── tools/
+│   ├── browser.py          ← Playwright automation
+│   ├── http_client.py      ← Async HTTP client
+│   ├── replay.py           ← HTTP replay (11 mutation modes)
+│   └── ...
+│
+├── auth/authcore/          ← Auth testing library
+│   ├── session.py          ← Sessions, cookies, JWT
+│   ├── idor_tester.py      ← Cross-user IDOR
+│   ├── role_tester.py      ← Privilege escalation
+│   └── ...
+│
+├── executors/              ← Vulnerability executors
+│   ├── cors_detector.py
+│   ├── ssti_detector.py
+│   ├── xss_detector.py
+│   ├── ssrf_tester.py
+│   └── ...
+│
+├── controller/             ← V3 executive controller
+├── are/                    ← Attack research engine
+└── benchmark/              ← Benchmark runner
+```
+
+---
+
+## What Demogorgon Detects
+
+| Module | Vulnerability Class |
 |---|---|
-| `researcher.py` | Orchestrates the full hunt pipeline |
-| `researcher_v3.py` | Executive controller with parallel experiments |
-| `browser.py` | Persistent Playwright with auto-capture |
-| `replay.py` | 11 replay modes (auth bypass, CSRF, IDOR, etc.) |
-| `authcore/` | Production-quality auth testing (7,400+ lines) |
-| `detectors.py` | Pattern-based SQLi, XSS, info disclosure detection |
-| `llm_client.py` | OpenRouter client with model rotation & retry |
+| `cors_detector` | CORS misconfiguration |
+| `xss_detector` | Cross-Site Scripting |
+| `ssti_detector` | Server-Side Template Injection |
+| `ssrf_tester` | Server-Side Request Forgery |
+| `xxe_detector` | XML External Entity |
+| `idor_tester` | Insecure Direct Object Reference |
+| `auth_bypass_tester` | Authentication Bypass |
+| `csrf_tester` | Cross-Site Request Forgery |
+| `info_disclosure_detector` | Information Disclosure |
+| `race_detector` | Race Conditions |
+| `jwt_attacker` | JWT Weakness |
+| `upload_tester` | File Upload Abuse |
+| `redirect_tester` | Open Redirect |
+| `logic_tester` | Business Logic Flaws |
 
-## Getting API Keys
-
-**OpenRouter (free):**
-1. Go to https://openrouter.ai
-2. Sign up → https://openrouter.ai/keys
-3. Create a key (free tier: ~200 requests/day per model)
-4. Add to `.env`: `OPENROUTER_API_KEY=sk-or-v1-...`
-
-**Free models used:**
-- `nvidia/llama-3.1-nemotron-70b-instruct:free` (primary)
-- `meta-llama/llama-3.2-11b-vision-instruct:free` (fallback)
+---
 
 ## Requirements
 
-- Python 3.11+
-- Playwright (auto-installed with Chromium)
-- OpenRouter API key (free)
+- **Python** 3.11+
+- **OpenRouter API key** (free tier available)
+- **Playwright** (auto-installed with Chromium)
+
+---
+
+## Getting Your Free API Key
+
+1. Go to **https://openrouter.ai**
+2. Sign up → Go to **https://openrouter.ai/keys**
+3. Click **Create Key** — name it `Demogorgon`
+4. Copy key (starts with `sk-or-...`)
+5. Paste in `.env`: `OPENROUTER_API_KEY=sk-or-...`
+
+**Free models:**
+| Model | Role |
+|---|---|
+| `nvidia/llama-3.1-nemotron-70b-instruct:free` | Primary |
+| `meta-llama/llama-3.2-11b-vision-instruct:free` | Fallback |
+
+Free tier: ~200 requests/day per model. Auto-rotation on limit hit.
+
+---
+
+## Development
+
+```bash
+# Install dev deps
+pip install -r requirements-dev.txt
+
+# Run tests
+pytest demogorgon/auth/authcore/tests/ -v
+
+# Lint
+ruff check demogorgon/
+```
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+---
 
 ## License
 
-MIT
+[MIT](LICENSE)
+
+---
+
+<div align="center">
+
+**Happy Hunting! Remember: Can an attacker do this RIGHT NOW against a real user? If no, STOP.**
+
+</div>

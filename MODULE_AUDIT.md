@@ -1,9 +1,9 @@
-# MODULE_AUDIT.md — Sentinel V2 Capability Audit
+# MODULE_AUDIT.md — Demogorgon Capability Audit
 
 ## Executive Summary
 
-Sentinel V2 has **32 Python files** totaling **~12,385 lines**.
-- **Core sentinel_v2 package:** 14 files, ~4,920 lines
+Demogorgon has **32 Python files** totaling **~12,385 lines**.
+- **Core demogorgon package:** 14 files, ~4,920 lines
 - **auth/authcore sub-package:** 18 files, ~7,465 lines
 - **Critical finding:** The authcore package is completely decoupled from the core researcher. Zero imports between them. 7,465 lines of production-quality auth testing code are never used.
 

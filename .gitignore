@@ -62,19 +62,19 @@ recon/
 cloudflare/
 
 # ── Target-specific hunt data (per-program findings, sessions, PoCs) ──────
-sentinel_v2/programs/abhieo/
-sentinel_v2/programs/backtrack/
-sentinel_v2/programs/clicktime/
-sentinel_v2/programs/forexfactory/
-sentinel_v2/programs/formdesk/
-sentinel_v2/programs/gifty/
-sentinel_v2/programs/github/
-sentinel_v2/programs/kali/
-sentinel_v2/programs/make/
-sentinel_v2/programs/offsec/
-sentinel_v2/programs/paydo/
-sentinel_v2/programs/vk/
-sentinel_v2/programs/zomato/
+demogorgon/programs/abhieo/
+demogorgon/programs/backtrack/
+demogorgon/programs/clicktime/
+demogorgon/programs/forexfactory/
+demogorgon/programs/formdesk/
+demogorgon/programs/gifty/
+demogorgon/programs/github/
+demogorgon/programs/kali/
+demogorgon/programs/make/
+demogorgon/programs/offsec/
+demogorgon/programs/paydo/
+demogorgon/programs/vk/
+demogorgon/programs/zomato/
 
 # ── Large data files ────────────────────────────────────────────────────────
 datasets/

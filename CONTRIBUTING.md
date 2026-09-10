@@ -1,4 +1,4 @@
-# Contributing to Sentinel V2
+# Contributing to Demogorgon
 
 Thanks for your interest in contributing! Here's how to get started.
 
@@ -15,28 +15,28 @@ pip install -r requirements-dev.txt
 ## Running Tests
 
 ```bash
-pytest sentinel_v2/auth/authcore/tests/ -v
+pytest demogorgon/auth/authcore/tests/ -v
 ```
 
 ## Code Style
 
 - Follow existing patterns in the codebase
-- Use `ruff` for linting: `ruff check sentinel_v2/`
+- Use `ruff` for linting: `ruff check demogorgon/`
 - Type hints encouraged but not required
 - Keep functions focused and under 100 lines
 
 ## Adding a New Detector
 
-1. Add detection logic in `sentinel_v2/detectors.py`
-2. Add corresponding executor in `sentinel_v2/executors/`
+1. Add detection logic in `demogorgon/detectors.py`
+2. Add corresponding executor in `demogorgon/executors/`
 3. Wire it into `researcher.py` act methods
 4. Test against DVWA or Juice Shop
 
 ## Adding a New Auth Test
 
-1. Add test logic in `sentinel_v2/auth/authcore/`
+1. Add test logic in `demogorgon/auth/authcore/`
 2. Follow existing patterns (see `idor_tester.py` for reference)
-3. Wire through `sentinel_v2/auth/bridge.py`
+3. Wire through `demogorgon/auth/bridge.py`
 
 ## Reporting Issues
 

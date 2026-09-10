@@ -2,7 +2,7 @@
 
 ## Current State
 
-Sentinel has **zero instrumentation**. No metrics are collected during a hunt. The only output is:
+Demogorgon has **zero instrumentation**. No metrics are collected during a hunt. The only output is:
 - Console prints (not structured)
 - `memory.get_summary()` (basic counts)
 - `app_model.get_summary()` (text dump)

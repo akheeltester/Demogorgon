@@ -189,8 +189,8 @@ Same logic, different data sources.
 
 | File | Import | Line |
 |---|---|---|
-| researcher.py | `from sentinel_v2.reasoning_trace import ReasoningTrace` | 35 |
-| researcher.py | `from sentinel_v2.evidence_validator import EvidenceValidator` | 36 |
+| researcher.py | `from demogorgon.reasoning_trace import ReasoningTrace` | 35 |
+| researcher.py | `from demogorgon.evidence_validator import EvidenceValidator` | 36 |
 | authcore/boundary_tester.py | `from authcore.store import AuthSessionStore` | 28 |
 
 ---

@@ -10,7 +10,7 @@ Every task must increase the probability of finding reportable vulnerabilities o
 
 ### 1. Wire deterministic endpoint discovery into researcher
 
-**Why:** Currently 0 endpoints discovered from JS source, 0 from admin paths, 0 from __NEXT_DATA__. The researcher visits 5-7 hardcoded URLs and relies on LLM to choose more. This is the #1 reason Sentinel finds 0 vulnerabilities.
+**Why:** Currently 0 endpoints discovered from JS source, 0 from admin paths, 0 from __NEXT_DATA__. The researcher visits 5-7 hardcoded URLs and relies on LLM to choose more. This is the #1 reason Demogorgon finds 0 vulnerabilities.
 
 **What:**
 - Call `browser.extract_next_data()` after each navigation
@@ -96,7 +96,7 @@ Every task must increase the probability of finding reportable vulnerabilities o
 
 **Expected improvement:** Detect 30-50% of known vulnerability patterns without LLM
 
-**Estimated LOC:** 300 lines (new module: sentinel_v2/detectors.py)
+**Estimated LOC:** 300 lines (new module: demogorgon/detectors.py)
 
 **Estimated time:** 4 hours
 
@@ -110,7 +110,7 @@ Every task must increase the probability of finding reportable vulnerabilities o
 
 ### 5. Add wordlist-based directory fuzzing
 
-**Why:** ffuf discovers 200+ endpoints in 2 minutes. Sentinel discovers 7 in 5 minutes. Wordlist fuzzing is the fastest way to increase coverage.
+**Why:** ffuf discovers 200+ endpoints in 2 minutes. Demogorgon discovers 7 in 5 minutes. Wordlist fuzzing is the fastest way to increase coverage.
 
 **What:**
 - Add `tools/fuzzer.py` with recursive directory fuzzing

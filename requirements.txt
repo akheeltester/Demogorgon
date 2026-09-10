@@ -1,4 +1,4 @@
-# Sentinel V2 — Requirements
+# Demogorgon — Requirements
 # Core: pip install -r requirements.txt
 # Full: pip install -r requirements.txt[all]
 

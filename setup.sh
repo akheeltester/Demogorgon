@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Sentinel V2 — One-command setup
+# Demogorgon — One-command setup
 # Usage: bash setup.sh
 
 set -euo pipefail
 
 echo "============================================"
-echo "  Sentinel V2 — Autonomous Bug Bounty Hunter"
+echo "  Demogorgon — Autonomous Bug Bounty Hunter"
 echo "  Setup Script"
 echo "============================================"
 echo ""
@@ -75,9 +75,9 @@ echo ""
 echo "  Quick start:"
 echo "    1. Edit .env and add your API key"
 echo "    2. Run: source venv/bin/activate"
-echo "    3. Run: python -m sentinel_v2 https://target.com"
+echo "    3. Run: python -m demogorgon https://target.com"
 echo ""
 echo "  Test with OWASP Juice Shop:"
 echo "    docker run -d -p 3000:3000 bkimminich/juice-shop"
-echo "    python -m sentinel_v2 http://localhost:3000"
+echo "    python -m demogorgon http://localhost:3000"
 echo "============================================"
