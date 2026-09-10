@@ -22,32 +22,17 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-
-class ProductType(str, Enum):
-    ECOMMERCE = "ecommerce"
-    BANKING = "banking"
-    MARKETPLACE = "marketplace"
-    SAAS = "saas"
-    SOCIAL = "social"
-    HEALTHCARE = "healthcare"
-    GOVERNMENT = "government"
-    AI_PLATFORM = "ai_platform"
-    EDUCATION = "education"
-    GAMING = "gaming"
-    UNKNOWN = "unknown"
-
-
-class ObjectState(str, Enum):
-    """Lifecycle states for business objects."""
-    CREATED = "created"
-    ACTIVE = "active"
-    SUSPENDED = "suspended"
-    DELETED = "deleted"
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
+# Canonical models — single source of truth
+from demogorgon.core.models import (
+    ProductType,
+    ObjectState,
+    BusinessObject,
+    ObjectRelationship,
+    WorkflowStep,
+    TrustBoundary,
+    AttackSurface,
+    AttackOpportunity,
+)
 
 
 @dataclass
@@ -57,135 +42,8 @@ class UserRole:
     level: int  # 0=guest, 1=user, 2=premium, 3=seller, 4=admin, 5=superadmin
     permissions: list[str] = field(default_factory=list)
     description: str = ""
-    can_do: list[str] = field(default_factory=list)  # Specific actions this role can take
-    cannot_do: list[str] = field(default_factory=list)  # Actions this role cannot take
-
-
-@dataclass
-class BusinessObject:
-    """A business entity in the application."""
-    object_type: str
-    identifier: str
-    owner: str | None = None
-    organization: str | None = None
-    visibility: str = "private"  # public, private, shared, org_only
-    lifecycle: list[str] = field(default_factory=list)  # created, active, suspended, deleted
-    parent_objects: list[str] = field(default_factory=list)  # parent object types
-    child_objects: list[str] = field(default_factory=list)  # child object types
-    properties: dict[str, Any] = field(default_factory=dict)
-    endpoint: str = ""  # where this was discovered
-    discovered_at: float = field(default_factory=time.time)
-    state: ObjectState = ObjectState.ACTIVE
-    id_type: str = "unknown"  # sequential, uuid, slug, auto_increment
-
-    def to_dict(self) -> dict:
-        return {
-            "object_type": self.object_type,
-            "identifier": self.identifier,
-            "owner": self.owner,
-            "organization": self.organization,
-            "visibility": self.visibility,
-            "lifecycle": self.lifecycle,
-            "parent_objects": self.parent_objects,
-            "child_objects": self.child_objects,
-            "properties": self.properties,
-            "endpoint": self.endpoint,
-            "state": self.state.value,
-            "id_type": self.id_type,
-        }
-
-
-@dataclass
-class ObjectRelationship:
-    """A relationship between two business objects."""
-    from_type: str
-    to_type: str
-    relationship: str  # owns, contains, belongs_to, created_by, managed_by, linked_to
-    from_id: str = ""
-    to_id: str = ""
-    description: str = ""
-    bidirectional: bool = False
-    trust_required: bool = False  # Does crossing this relationship require trust?
-
-    def to_dict(self) -> dict:
-        return {
-            "from_type": self.from_type,
-            "to_type": self.to_type,
-            "relationship": self.relationship,
-            "from_id": self.from_id,
-            "to_id": self.to_id,
-            "description": self.description,
-            "bidirectional": self.bidirectional,
-            "trust_required": self.trust_required,
-        }
-
-
-@dataclass
-class WorkflowStep:
-    """A step in a user workflow."""
-    name: str
-    endpoint: str
-    method: str = "GET"
-    requires_auth: bool = False
-    requires_role: str | None = None
-    produces_objects: list[str] = field(default_factory=list)  # object types produced
-    consumes_objects: list[str] = field(default_factory=list)  # object types consumed
-    next_steps: list[str] = field(default_factory=list)  # step names that can follow
-    description: str = ""
-    state_transition: str = ""  # e.g., "created -> active"
-    trust_boundary_crossed: str = ""  # e.g., "guest -> user"
-
-
-@dataclass
-class TrustBoundary:
-    """A trust boundary in the application."""
-    name: str
-    from_level: str
-    to_level: str
-    boundary_type: str  # auth, role, org, workspace, api, frontend
-    endpoint: str = ""  # where this boundary was observed
-    description: str = ""
-    bypass_techniques: list[str] = field(default_factory=list)  # Known bypass methods
-
-    def to_dict(self) -> dict:
-        return {
-            "name": self.name,
-            "from_level": self.from_level,
-            "to_level": self.to_level,
-            "boundary_type": self.boundary_type,
-            "endpoint": self.endpoint,
-            "description": self.description,
-            "bypass_techniques": self.bypass_techniques,
-        }
-
-
-@dataclass
-class AttackSurface:
-    """Classification of an endpoint's attack surface."""
-    endpoint: str
-    method: str
-    category: str  # auth, payment, upload, admin, search, etc.
-    risk_level: str = "medium"  # low, medium, high, critical
-    auth_required: bool = False
-    rate_limited: bool = False
-    description: str = ""
-    parameters: list[str] = field(default_factory=list)  # Known parameters
-    state_changing: bool = False  # Does this endpoint change state?
-
-
-@dataclass
-class AttackOpportunity:
-    """A specific attack opportunity based on application understanding."""
-    description: str
-    vuln_class: str
-    endpoint: str
-    method: str = "GET"
-    confidence: float = 0.5
-    reasoning: str = ""  # why this is a good target
-    test_plan: list[str] = field(default_factory=list)
-    depends_on: list[str] = field(default_factory=list)  # other opportunities this chains with
-    evidence: list[str] = field(default_factory=list)  # Supporting evidence
-    expected_impact: str = ""
+    can_do: list[str] = field(default_factory=list)
+    cannot_do: list[str] = field(default_factory=list)
 
 
 class ApplicationModel:

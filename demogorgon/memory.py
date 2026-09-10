@@ -8,137 +8,18 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
-
-class Severity(str, Enum):
-    CRITICAL = "critical"
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-    INFO = "info"
-
-
-@dataclass
-class Finding:
-    title: str
-    severity: Severity
-    vuln_class: str
-    endpoint: str
-    method: str
-    evidence: str
-    reproduction: list[str]
-    impact: str
-    confirmed: bool = False
-    timestamp: float = field(default_factory=time.time)
-    request: dict | None = None
-    response: dict | None = None
-    screenshot: str | None = None
-
-    def to_dict(self) -> dict:
-        return {
-            "title": self.title,
-            "severity": self.severity.value,
-            "vuln_class": self.vuln_class,
-            "endpoint": self.endpoint,
-            "method": self.method,
-            "evidence": self.evidence,
-            "reproduction": self.reproduction,
-            "impact": self.impact,
-            "confirmed": self.confirmed,
-            "timestamp": self.timestamp,
-            "request": self.request,
-            "response": self.response,
-            "screenshot": self.screenshot,
-        }
-
-
-@dataclass
-class Hypothesis:
-    description: str
-    vuln_class: str
-    endpoint: str
-    confidence: float
-    test_plan: list[str]
-    status: str = "pending"  # pending, testing, confirmed, rejected
-    result: str | None = None
-    evidence_for: list[str] = field(default_factory=list)
-    evidence_against: list[str] = field(default_factory=list)
-    tests_run: int = 0
-    tests_succeeded: int = 0
-    timestamp: float = field(default_factory=time.time)
-
-    def update_confidence(self):
-        """Update confidence based on evidence."""
-        total = len(self.evidence_for) + len(self.evidence_against)
-        if total == 0:
-            return
-        positive = len(self.evidence_for)
-        self.confidence = positive / total
-        if self.confidence > 0.8:
-            self.status = "confirmed"
-        elif self.confidence < 0.2:
-            self.status = "rejected"
-
-
-@dataclass
-class Endpoint:
-    url: str
-    method: str = "GET"
-    params: dict = field(default_factory=dict)
-    headers: dict = field(default_factory=dict)
-    body: str | None = None
-    content_type: str | None = None
-    status_code: int | None = None
-    response_length: int | None = None
-    response_snippet: str | None = None
-    tech_stack: list[str] = field(default_factory=list)
-    auth_required: bool = False
-    tested: bool = False
-    discovered_at: float = field(default_factory=time.time)
-    request: dict | None = None  # Full request for replay
-    response: dict | None = None  # Full response
-
-
-@dataclass
-class BusinessObject:
-    """A business entity discovered during the hunt."""
-    object_type: str  # e.g., "offer", "user", "order", "invoice"
-    object_id: str  # e.g., "8123", "uuid-here"
-    owner: str | None = None  # e.g., "buyer_a", "admin"
-    organization: str | None = None
-    workflow: str | None = None  # e.g., "purchase", "invite"
-    permissions: list[str] = field(default_factory=list)  # e.g., ["owner_only"]
-    endpoint: str = ""  # Where this object was discovered
-    data: dict = field(default_factory=dict)  # Any associated data
-    discovered_at: float = field(default_factory=time.time)
-
-    def to_dict(self) -> dict:
-        return {
-            "object_type": self.object_type,
-            "object_id": self.object_id,
-            "owner": self.owner,
-            "organization": self.organization,
-            "workflow": self.workflow,
-            "permissions": self.permissions,
-            "endpoint": self.endpoint,
-            "data": self.data,
-        }
-
-
-@dataclass
-class Observation:
-    """A structured observation about the target."""
-    description: str
-    endpoint: str
-    category: str  # e.g., "endpoint_behavior", "auth_flow", "data_leak", "business_logic"
-    entities: list[str] = field(default_factory=list)  # Related business objects
-    properties: dict[str, Any] = field(default_factory=dict)  # Structured data
-    confidence: float = 1.0
-    timestamp: float = field(default_factory=time.time)
+# Canonical models — single source of truth
+from demogorgon.core.models import (
+    Severity,
+    Finding,
+    Hypothesis,
+    Endpoint,
+    BusinessObject,
+    Observation,
+)
 
 
 class Memory:
@@ -217,7 +98,8 @@ class Memory:
         return h
 
     def get_active_hypotheses(self) -> list[Hypothesis]:
-        return [h for h in self.hypotheses if h.status in ("pending", "testing")]
+        return [h for h in self.hypotheses
+                if h.status in ("pending", "testing")]
 
     def get_confirmed_hypotheses(self) -> list[Hypothesis]:
         return [h for h in self.hypotheses if h.status == "confirmed"]
@@ -240,13 +122,13 @@ class Memory:
             vuln_class=vuln_class,
             endpoint=endpoint,
             method=method,
-            evidence=evidence,
+            evidence=[{"text": evidence}] if evidence else [],
             reproduction=reproduction,
             impact=impact,
             confirmed=True,
-            request=request,
-            response=response,
-            screenshot=screenshot,
+            request=str(request) if request else "",
+            response=str(response) if response else "",
+            screenshot=screenshot or "",
         )
         self.findings.append(f)
         self.finding_count += 1
@@ -287,9 +169,9 @@ class Memory:
         obj = BusinessObject(
             object_type=object_type,
             object_id=object_id,
-            owner=owner,
-            organization=organization,
-            workflow=workflow,
+            owner=owner or "",
+            organization=organization or "",
+            workflow=workflow or "",
             permissions=permissions or [],
             endpoint=endpoint,
             data=data or {},
@@ -348,11 +230,7 @@ class Memory:
         )
 
     # ============================================================
-    # Dynamic LLM context
-    # ============================================================
-
-    # ============================================================
-    # Persistence
+    # Summary & Persistence
     # ============================================================
 
     def get_summary(self) -> dict:
@@ -395,18 +273,7 @@ class Memory:
                 "request": e.request,
             } for url, e in self.endpoints.items()},
             "business_objects": [o.to_dict() for o in self.business_objects],
-            "hypotheses": [{
-                "description": h.description,
-                "vuln_class": h.vuln_class,
-                "endpoint": h.endpoint,
-                "confidence": h.confidence,
-                "status": h.status,
-                "result": h.result,
-                "evidence_for": h.evidence_for,
-                "evidence_against": h.evidence_against,
-                "tests_run": h.tests_run,
-                "tests_succeeded": h.tests_succeeded,
-            } for h in self.hypotheses],
+            "hypotheses": [h.to_dict() for h in self.hypotheses],
             "findings": [f.to_dict() for f in self.findings],
             "observations": [{
                 "description": o.description,
@@ -420,4 +287,4 @@ class Memory:
             "failed_tests": self.failed_tests,
             "summary": self.get_summary(),
         }
-        path.write_text(json.dumps(data, indent=2))
+        path.write_text(json.dumps(data, indent=2, default=str))

@@ -1,4 +1,4 @@
-"""Tests for ScopeValidator and ResearchConfig."""
+"""Tests for ScopeValidator, ResearchConfig, and canonical domain models."""
 
 from __future__ import annotations
 
@@ -6,6 +6,12 @@ import pytest
 
 from demogorgon.core.scope import ScopeValidator
 from demogorgon.core.config import ResearchConfig
+from demogorgon.core.models import (
+    Severity, HypothesisStatus, AttackFamily, ObjectState,
+    Finding, Hypothesis, Endpoint, BusinessObject, Observation,
+    TrustBoundary, AttackOpportunity, Experiment, FindingScore,
+    ResearchAction, WorkflowStep, AttackSurface,
+)
 
 
 # ── ScopeValidator tests ────────────────────────────────────────
@@ -71,7 +77,6 @@ class TestScopeValidator:
 
     def test_rejects_root_domain(self):
         sv = ScopeValidator("https://sub.example.com")
-        # parent domain should NOT match
         assert sv.in_scope("https://example.com") is False
 
 
@@ -92,13 +97,13 @@ class TestResearchConfig:
 
     def test_requests_per_second_minimum_floor(self):
         cfg = ResearchConfig(rate_limit_delay=0.0)
-        assert cfg.requests_per_second == 10.0  # 1.0 / 0.1
+        assert cfg.requests_per_second == 10.0
 
     def test_with_overrides(self):
         cfg = ResearchConfig(target_url="https://example.com", max_experiments=10)
         cfg2 = cfg.with_overrides(max_experiments=100)
         assert cfg2.max_experiments == 100
-        assert cfg2.target_url == "https://example.com"  # unchanged
+        assert cfg2.target_url == "https://example.com"
 
     def test_with_overrides_ignores_unknown(self):
         cfg = ResearchConfig(target_url="https://example.com")
@@ -109,3 +114,108 @@ class TestResearchConfig:
         cfg = ResearchConfig()
         assert cfg.extra_scopes == []
         assert cfg.excluded_hosts == []
+
+
+# ── Canonical Model tests ──────────────────────────────────────
+
+class TestEnums:
+    def test_severity_values(self):
+        assert Severity.CRITICAL.value == "critical"
+        assert Severity.INFO.value == "info"
+
+    def test_hypothesis_status_values(self):
+        assert HypothesisStatus.PENDING.value == "pending"
+        assert HypothesisStatus.ESCALATED.value == "escalated"
+
+    def test_attack_family_values(self):
+        assert AttackFamily.IDOR.value == "idor"
+        assert AttackFamily.CHAIN.value == "chain"
+        assert len(AttackFamily) == 16
+
+
+class TestFinding:
+    def test_defaults(self):
+        f = Finding(title="XSS in search", severity=Severity.HIGH, vuln_class="xss", endpoint="/search")
+        assert f.title == "XSS in search"
+        assert f.severity == Severity.HIGH
+        assert f.method == "GET"
+        assert f.confidence == 0.0
+
+    def test_severity_as_string(self):
+        f = Finding(title="Info leak", severity="low", vuln_class="info", endpoint="/version")
+        assert f.severity == "low"
+
+
+class TestHypothesis:
+    def test_defaults(self):
+        h = Hypothesis(description="Test SQLi on login")
+        assert h.description == "Test SQLi on login"
+        assert h.status == HypothesisStatus.PENDING
+        assert h.is_pending is True
+        assert h.is_confirmed is False
+        assert h.id  # auto-generated
+
+    def test_confirmed_property(self):
+        h = Hypothesis(status="confirmed")
+        assert h.is_confirmed is True
+        assert h.is_pending is False
+
+    def test_string_status_backward_compat(self):
+        h = Hypothesis(status="testing")
+        assert h.status == "testing"
+        assert h.is_pending is False
+        assert h.is_confirmed is False
+
+    def test_attack_family_field(self):
+        h = Hypothesis(attack_family=AttackFamily.SSRF)
+        assert h.attack_family == AttackFamily.SSRF
+
+
+class TestEndpoint:
+    def test_defaults(self):
+        e = Endpoint(url="https://api.example.com/users")
+        assert e.url == "https://api.example.com/users"
+        assert e.method == "GET"
+        assert e.tested is False
+
+
+class TestBusinessObject:
+    def test_sync_identifiers(self):
+        bo = BusinessObject(object_type="user", object_id="123")
+        assert bo.identifier == "123"
+        assert bo.object_id == "123"
+
+    def test_sync_reverse(self):
+        bo = BusinessObject(object_type="order", identifier="ORD-456")
+        assert bo.object_id == "ORD-456"
+        assert bo.identifier == "ORD-456"
+
+    def test_defaults(self):
+        bo = BusinessObject()
+        assert bo.object_type == ""
+        assert bo.state == ObjectState.ACTIVE
+
+
+class TestTrustBoundary:
+    def test_defaults(self):
+        tb = TrustBoundary(from_level="user", to_level="admin", boundary_type="role_escalation")
+        assert tb.from_level == "user"
+        assert tb.to_level == "admin"
+        assert tb.bypass_techniques == []
+        assert tb.test_generated is False
+
+
+class TestExperiment:
+    def test_defaults(self):
+        exp = Experiment(hypothesis_id="h1", executor="sqli")
+        assert exp.hypothesis_id == "h1"
+        assert exp.status == "pending"
+        assert exp.id  # auto-generated
+
+
+class TestFindingScore:
+    def test_defaults(self):
+        fs = FindingScore(title="XSS reflected", severity=Severity.HIGH)
+        assert fs.title == "XSS reflected"
+        assert fs.should_report is False
+        assert fs.final_confidence == 0.0
