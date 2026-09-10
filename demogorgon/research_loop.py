@@ -147,11 +147,16 @@ class ResearchLoop:
         from demogorgon.are.chain_finder import ChainFinder
         from demogorgon.are.trust_boundary import TrustBoundaryMapper
         from demogorgon.are.attack_graph import AttackGraph
+        from demogorgon.are.exploit_confidence import ExploitConfidenceEngine
         self.knowledge_base = KnowledgeBase()
         self.mutations = MutationIntelligence()
         self.chain_finder = ChainFinder()
         self.trust_mapper = TrustBoundaryMapper()
         self.attack_graph = AttackGraph()
+        self.confidence_engine = ExploitConfidenceEngine()
+
+        # Finding scores — tracks all scored findings for report
+        self._finding_scores: list[dict[str, Any]] = []
 
         # Canonical scope validator
         from demogorgon.core.scope import ScopeValidator
@@ -907,6 +912,38 @@ RESPOND WITH VALID JSON:
             error=error,
         )
 
+    def _score_finding(
+        self,
+        finding: dict[str, Any],
+        response_status: int = 0,
+        response_changed: bool = False,
+    ) -> dict[str, Any]:
+        """Score a finding through the ExploitConfidenceEngine.
+
+        Returns the finding dict augmented with score fields and
+        appends the score to self._finding_scores.
+        """
+        score = self.confidence_engine.score_finding(
+            finding_id=finding.get("id", f"finding_{len(self._finding_scores)}"),
+            title=finding.get("title", "Unknown Finding"),
+            severity=finding.get("severity", "info"),
+            vuln_class=finding.get("type", finding.get("vuln_class", "unknown")),
+            endpoint=finding.get("endpoint", "unknown"),
+            evidence=finding.get("evidence", []),
+            response_status=response_status,
+            response_changed=response_changed,
+            has_screenshot=bool(finding.get("screenshot")),
+            has_request_response=bool(finding.get("request") and finding.get("response")),
+            business_context=finding.get("business_context", ""),
+        )
+
+        finding["confidence"] = score.final_confidence
+        finding["should_report"] = score.should_report
+        finding["score_reasoning"] = score.reasoning
+
+        self._finding_scores.append(score.to_dict())
+        return finding
+
     async def _execute_http(self, action: dict) -> dict[str, Any]:
         """Execute an HTTP request."""
         method = action.get("method", "GET").upper()
@@ -942,7 +979,10 @@ RESPOND WITH VALID JSON:
 
             if auto_findings:
                 for f in auto_findings:
-                    console.print(f"[bold red]AUTO-FINDING: [{f.get('severity', 'info').upper()}] {f['title']}[/bold red]")
+                    # Score finding through confidence engine
+                    f = self._score_finding(f, response_status=result["status_code"])
+                    tag = "REPORTABLE" if f.get("should_report") else "LOW-CONF"
+                    console.print(f"[bold red]AUTO-FINDING [{tag}]: [{f.get('severity', 'info').upper()}] {f['title']} ({f.get('confidence', 0):.0%})[/bold red]")
                     self.memory.add_finding(
                         title=f["title"],
                         severity=f.get("severity", "info"),
@@ -952,6 +992,7 @@ RESPOND WITH VALID JSON:
                         evidence=f.get("evidence", ""),
                         reproduction=f.get("steps", "").split("\n"),
                         impact=f.get("impact", ""),
+                        confidence=f.get("confidence", 0),
                     )
                     # Feed finding to ChainFinder for chain discovery
                     self.chain_finder.add_finding({
@@ -1105,7 +1146,12 @@ RESPOND WITH VALID JSON:
             self.state.last_finding_at = self.state.experiment_count
             self.state.stagnation_count = 0
             self.state.strategy = "exploit"
-            console.print(f"[bold red]FINDING #{self.state.finding_count}: {result.findings[0].get('title', 'Unknown')}[/bold red]")
+
+            # Score all executor-produced findings
+            for f in result.findings:
+                f = self._score_finding(f, response_status=0)
+                tag = "REPORTABLE" if f.get("should_report") else "LOW-CONF"
+                console.print(f"[bold red]FINDING #{self.state.finding_count} [{tag}]: {f.get('title', 'Unknown')} ({f.get('confidence', 0):.0%})[/bold red]")
         else:
             self.state.stagnation_count += 1
 
@@ -1344,28 +1390,41 @@ RESPOND WITH VALID JSON:
         findings = self.memory.findings
         runtime = self.state.runtime_seconds
 
+        # Classify findings by confidence
+        reportable = [s for s in self._finding_scores if s.get("should_report")]
+        low_conf = [s for s in self._finding_scores if not s.get("should_report")]
+
         console.print(f"\n[bold green]Research Loop Complete[/bold green]")
         console.print(f"  Target: {self.target_url}")
         console.print(f"  Runtime: {runtime:.0f}s")
         console.print(f"  Experiments: {self.state.experiment_count}")
         console.print(f"  Findings: {len(findings)}")
+        console.print(f"  Reportable (>=85%): {len(reportable)}")
+        console.print(f"  Below threshold: {len(low_conf)}")
         console.print(f"  Endpoints: {len(self.memory.endpoints)}")
         console.print(f"  Business Objects: {len(self.app_model.business_objects)}")
         console.print(f"  Trust Boundaries: {len(self.app_model.trust_boundaries)}")
 
-        if findings:
-            console.print("\n[bold red]=== FINDINGS ===[/bold red]")
-            for f in findings:
-                console.print(f"  [{f.severity.value.upper()}] {f.title}")
-                console.print(f"    Endpoint: {f.method} {f.endpoint}")
-                console.print(f"    Impact: {f.impact}")
+        if reportable:
+            console.print("\n[bold red]=== REPORTABLE FINDINGS ===[/bold red]")
+            for s in reportable:
+                console.print(f"  [{s['severity'].upper()}] {s['title']}")
+                console.print(f"    Endpoint: {s['endpoint']}")
+                console.print(f"    Confidence: {s['final_confidence']:.0%}")
+                console.print(f"    Reasoning: {s['reasoning'][:120]}")
                 console.print()
+
+        if low_conf:
+            console.print("\n[yellow]=== BELOW THRESHOLD ===[/yellow]")
+            for s in low_conf:
+                console.print(f"  [{s['severity'].upper()}] {s['title']} ({s['final_confidence']:.0%})")
 
         return {
             "target": self.target_url,
             "runtime": runtime,
             "experiments": self.state.experiment_count,
             "findings": len(findings),
+            "reportable_count": len(reportable),
             "finding_details": [
                 {
                     "title": f.title,
@@ -1376,9 +1435,11 @@ RESPOND WITH VALID JSON:
                     "evidence": f.evidence,
                     "reproduction": f.reproduction,
                     "impact": f.impact,
+                    "confidence": f.confidence,
                 }
                 for f in findings
             ],
+            "scored_findings": self._finding_scores,
             "endpoints_discovered": len(self.memory.endpoints),
             "business_objects": len(self.app_model.business_objects),
             "trust_boundaries": len(self.app_model.trust_boundaries),

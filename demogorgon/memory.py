@@ -115,7 +115,8 @@ class Memory:
                     endpoint: str, method: str, evidence: str,
                     reproduction: list[str], impact: str,
                     request: dict | None = None, response: dict | None = None,
-                    screenshot: str | None = None) -> Finding:
+                    screenshot: str | None = None,
+                    confidence: float = 0.0) -> Finding:
         f = Finding(
             title=title,
             severity=Severity(severity),
@@ -126,6 +127,7 @@ class Memory:
             reproduction=reproduction,
             impact=impact,
             confirmed=True,
+            confidence=confidence,
             request=str(request) if request else "",
             response=str(response) if response else "",
             screenshot=screenshot or "",
