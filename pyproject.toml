@@ -1,0 +1,73 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "sentinel-v2"
+version = "2.0.0"
+description = "Autonomous bug bounty hunting tool powered by LLM reasoning"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [
+    {name = "Akheel"},
+]
+keywords = ["bug-bounty", "security", "penetration-testing", "vulnerability-scanner", "ai"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Information Technology",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
+dependencies = [
+    "httpx>=0.27.0",
+    "rich>=13.0",
+    "openai>=1.0",
+    "python-dotenv>=1.0",
+    "urllib3>=2.0",
+    "playwright>=1.40",
+    "PyJWT>=2.8",
+    "cryptography>=42.0",
+    "passlib>=1.7",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "tldextract>=5.0",
+    "orjson>=3.9",
+    "tenacity>=8.2",
+    "cachetools>=5.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "mypy>=1.8",
+    "ruff>=0.3",
+]
+
+[project.scripts]
+sentinel = "sentinel_v2.main:main"
+
+[project.urls]
+Homepage = "https://github.com/Akheel-Org/Organism"
+Repository = "https://github.com/Akheel-Org/Organism"
+Issues = "https://github.com/Akheel-Org/Organism/issues"
+
+[tool.setuptools.packages.find]
+include = ["sentinel_v2*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

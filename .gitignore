@@ -1,0 +1,118 @@
+# Sentinel V2 — .gitignore
+# Generated: 2026-09-10
+
+# ── Python ──────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+*.whl
+
+# ── Virtual Environments ────────────────────────────────────────────────────
+venv/
+.venv/
+ENV/
+env/
+
+# ── IDE / Editor ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── Environment / Secrets (NEVER commit) ───────────────────────────────────
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+*.crt
+
+# ── Private credentials (per-target auth) ───────────────────────────────────
+.private/
+
+# ── Databases (runtime data) ────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+sentinel_telemetry.db
+sessions.db
+community_intel.db
+
+# ── Runtime state ───────────────────────────────────────────────────────────
+cognitive_memory/
+checkpoints/
+campaign_checkpoints/
+chroma_db/
+logs/
+*.log
+
+# ── Hunt output (generated per run) ────────────────────────────────────────
+hunt_output/
+hunt_output_*/
+reports/
+
+# ── Recon data (target-specific, huge) ─────────────────────────────────────
+recon/
+cloudflare/
+
+# ── Target-specific hunt data (per-program findings, sessions, PoCs) ──────
+sentinel_v2/programs/abhieo/
+sentinel_v2/programs/backtrack/
+sentinel_v2/programs/clicktime/
+sentinel_v2/programs/forexfactory/
+sentinel_v2/programs/formdesk/
+sentinel_v2/programs/gifty/
+sentinel_v2/programs/github/
+sentinel_v2/programs/kali/
+sentinel_v2/programs/make/
+sentinel_v2/programs/offsec/
+sentinel_v2/programs/paydo/
+sentinel_v2/programs/vk/
+sentinel_v2/programs/zomato/
+
+# ── Large data files ────────────────────────────────────────────────────────
+datasets/
+
+# ── Legacy node_modules ─────────────────────────────────────────────────────
+**/node_modules/
+
+# ── Legacy (development history, not part of core tool) ────────────────────
+legacy/
+
+# ── Scratch / Test Data ─────────────────────────────────────────────────────
+scratch/
+*.tmp
+*.temp
+*.csv
+*.parquet
+
+# ── JSON runtime files ──────────────────────────────────────────────────────
+bandit_state.json
+scan_summary.json
+smoke_test_results.json
+*_report.json
+*_validation_report.json
+stats.json
+
+# ── Jupyter / Notebooks ─────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── mypy / type checking ────────────────────────────────────────────────────
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ── pytest ──────────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── OS ──────────────────────────────────────────────────────────────────────
+Thumbs.db
+.DS_Store
