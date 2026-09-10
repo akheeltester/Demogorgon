@@ -22,6 +22,8 @@ from typing import Any
 
 from rich.console import Console
 
+from demogorgon.core.config import ResearchConfig
+from demogorgon.core.scope import ScopeValidator
 from demogorgon.controller.executive import ExecutiveController, Hypothesis
 from demogorgon.controller.execution_graph import ExecutionGraph
 from demogorgon.controller.self_evaluator import SelfEvaluator
@@ -38,29 +40,28 @@ console = Console()
 class ResearcherV3:
     """Autonomous security researcher using research loop."""
 
-    def __init__(
-        self,
-        target_url: str,
-        headless: bool = True,
-        proxy: str | None = None,
-        rate_limit: float = 1.0,
-        max_experiments: int = 50,
-        output_dir: str = "hunt_output_v3",
-    ):
-        self.target_url = target_url
-        self.headless = headless
-        self.proxy = proxy
-        self.rate_limit = rate_limit
-        self.max_experiments = max_experiments
-        self.output_dir = output_dir
+    def __init__(self, config: ResearchConfig):
+        self.config = config
+        self.target_url = config.target_url
+        self.headless = config.headless
+        self.proxy = config.proxy
+        self.rate_limit = config.rate_limit_delay
+        self.max_experiments = config.max_experiments
+        self.output_dir = config.output_dir
 
         self.controller = ExecutiveController()
         self.graph = ExecutionGraph()
         self.evaluator = SelfEvaluator()
         self.llm_manager = LLMManager()
-        self.http = HTTPClient(proxy=proxy)
-        self.memory = Memory(target_url, output_dir)
+        rps = config.requests_per_second
+        self.http = HTTPClient(proxy=config.proxy, rps=rps)
+        self.memory = Memory(self.target_url, self.output_dir)
         self.browser: BrowserTool | None = None
+        self.scope = ScopeValidator(
+            self.target_url,
+            extra_scopes=config.extra_scopes,
+            excluded_hosts=config.excluded_hosts,
+        )
 
         self._executors: dict[str, Any] = {}
         self._experiment_count = 0
@@ -75,11 +76,16 @@ class ResearcherV3:
         self.browser = BrowserTool(headless=self.headless, proxy=self.proxy)
         await self.browser.launch()
 
-        # Create research loop
-        config = LoopConfig(
-            max_experiments=self.max_experiments,
-            self_eval_interval=20,
-            rate_limit_delay=self.rate_limit,
+        # Create research loop from canonical config
+        loop_config = LoopConfig(
+            max_experiments=self.config.max_experiments,
+            self_eval_interval=self.config.self_eval_interval,
+            rate_limit_delay=self.config.rate_limit_delay,
+            stagnation_threshold=self.config.stagnation_threshold,
+            max_duplicate_actions=self.config.max_duplicate_actions,
+            max_same_endpoint=self.config.max_same_endpoint,
+            max_same_vuln_class=self.config.max_same_vuln_class,
+            context_window_limit=self.config.context_window_limit,
         )
 
         self._loop = ResearchLoop(
@@ -88,7 +94,7 @@ class ResearcherV3:
             http_client=self.http,
             browser_tool=self.browser,
             auth_manager=self._create_auth_manager(),
-            config=config,
+            config=loop_config,
         )
 
         # Run the research loop
@@ -107,9 +113,7 @@ class ResearcherV3:
     def _create_auth_manager(self):
         """Create a basic auth manager."""
         from demogorgon.auth.bridge import AuthManager
-        from urllib.parse import urlparse
-        domain = urlparse(self.target_url).hostname or ""
-        return AuthManager(target_domain=domain)
+        return AuthManager(target_domain=self.scope.target_host)
 
     async def _cleanup(self) -> None:
         if self.browser:

@@ -135,6 +135,10 @@ class ResearchLoop:
         self.evaluator = SelfEvaluator()
         self.state = LoopState()
 
+        # Canonical scope validator
+        from demogorgon.core.scope import ScopeValidator
+        self._scope_validator = ScopeValidator(target_url)
+
         # Deterministic executors (lazy loaded)
         self._executors: dict[str, Any] = {}
 
@@ -1148,36 +1152,8 @@ RESPOND WITH VALID JSON:
         return list(all_classes - tested)
 
     def _in_scope(self, url: str) -> bool:
-        """Check if a URL is in scope using hostname-aware matching.
-
-        Correctly handles:
-        - subdomain matching: api.example.com matches example.com
-        - rejects substring matches: evil-example.com does NOT match example.com
-        - handles ports, trailing dots, case normalization
-        - handles IP addresses and explicit scope entries
-        """
-        from urllib.parse import urlparse
-        try:
-            target_host = urlparse(self.target_url).hostname or ""
-            url_host = urlparse(url).hostname or ""
-        except Exception:
-            return False
-
-        if not target_host or not url_host:
-            return False
-
-        target_host = target_host.lower().rstrip(".")
-        url_host = url_host.lower().rstrip(".")
-
-        # Exact match
-        if url_host == target_host:
-            return True
-
-        # Subdomain match: url_host ends with .target_host
-        if url_host.endswith("." + target_host):
-            return True
-
-        return False
+        """Check if a URL is in scope — delegates to canonical ScopeValidator."""
+        return self._scope_validator.in_scope(url)
 
     # ============================================================
     # LLM Reasoning

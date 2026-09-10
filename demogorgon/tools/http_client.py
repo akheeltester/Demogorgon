@@ -48,13 +48,26 @@ class RateLimiter:
 
 
 class ScopeGuard:
-    def __init__(self):
+    """Defense-in-depth scope check using ScopeValidator for canonical logic."""
+
+    def __init__(self, scope_validator=None):
+        self._validator = scope_validator
+        # Legacy manual mode if no validator provided
         self.allowed: set[str] = set()
 
     def add(self, domain: str):
+        """Add domain to allowed set (legacy manual mode)."""
         self.allowed.add(domain)
+        if self._validator is None:
+            self._validator = __import__(
+                "demogorgon.core.scope", fromlist=["ScopeValidator"]
+            ).ScopeValidator(f"https://{domain}")
 
     def in_scope(self, url: str) -> bool:
+        # If a ScopeValidator is set, use it (canonical path)
+        if self._validator is not None:
+            return self._validator.in_scope(url)
+        # Fallback: manual allowed set
         if not self.allowed:
             return True
         try:

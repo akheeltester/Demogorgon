@@ -21,6 +21,8 @@ import sys
 
 from rich.console import Console
 
+from demogorgon.core.config import ResearchConfig
+
 console = Console()
 
 
@@ -45,17 +47,21 @@ async def main():
 
     args = parser.parse_args()
 
-    if args.v3:
+    config = ResearchConfig(
+        target_url=args.target,
+        headless=args.headless,
+        proxy=args.proxy,
+        rate_limit_delay=args.rate_limit,
+        max_experiments=args.max_iterations,
+        output_dir=args.output,
+        use_v3=args.v3,
+        benchmark=args.benchmark,
+    )
+
+    if config.use_v3:
         from demogorgon.researcher_v3 import ResearcherV3
 
-        researcher = ResearcherV3(
-            target_url=args.target,
-            headless=args.headless,
-            proxy=args.proxy,
-            rate_limit=args.rate_limit,
-            max_experiments=args.max_iterations,
-            output_dir=args.output,
-        )
+        researcher = ResearcherV3(config=config)
 
         try:
             result = await researcher.start()
@@ -83,19 +89,17 @@ async def main():
             await researcher._cleanup()
             raise
 
-    elif args.benchmark:
+    elif config.benchmark:
         from demogorgon.benchmark.runner import BenchmarkRunner
         from demogorgon.researcher_v3 import ResearcherV3
 
         async def run_benchmark(target_url):
-            r = ResearcherV3(
+            bench_cfg = config.with_overrides(
                 target_url=target_url,
                 headless=True,
-                proxy=args.proxy,
-                rate_limit=args.rate_limit,
-                max_experiments=args.max_iterations,
-                output_dir=f"{args.output}_benchmark",
+                output_dir=f"{config.output_dir}_benchmark",
             )
+            r = ResearcherV3(config=bench_cfg)
             result = await r.start()
             return result["finding_details"]
 
@@ -140,13 +144,8 @@ async def main():
             sys.exit(1)
 
         researcher = Researcher(
-            target_url=args.target,
+            config=config,
             llm_client=llm,
-            headless=args.headless,
-            proxy=args.proxy,
-            rate_limit=args.rate_limit,
-            max_iterations=args.max_iterations,
-            output_dir=args.output,
         )
 
         try:
