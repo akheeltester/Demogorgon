@@ -112,6 +112,13 @@ class Reporter:
                 lines.append(f"**Confidence:** {finding.get('confidence', 0):.0%}")
                 lines.append(f"")
 
+                # 5-dimension score breakdown (if available)
+                score_reasoning = finding.get("score_reasoning")
+                if score_reasoning:
+                    lines.append(f"**Score Breakdown:**")
+                    lines.append(f"- {score_reasoning}")
+                    lines.append(f"")
+
                 # Question 1: Why was this investigated?
                 lines.append(f"#### Why was this investigated?")
                 lines.append(f"")
@@ -199,6 +206,12 @@ class Reporter:
         lines.append(f"**Vuln Class:** {finding.get('vuln_class', 'unknown')}")
         lines.append(f"**Confidence:** {finding.get('confidence', 0):.0%}")
         lines.append(f"")
+
+        score_reasoning = finding.get("score_reasoning")
+        if score_reasoning:
+            lines.append(f"**Confidence Breakdown:**")
+            lines.append(f"- {score_reasoning}")
+            lines.append(f"")
 
         lines.append(f"## Steps to Reproduce")
         lines.append(f"")
