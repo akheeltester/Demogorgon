@@ -135,6 +135,12 @@ class ResearchLoop:
         self.evaluator = SelfEvaluator()
         self.state = LoopState()
 
+        # V3 controller components
+        from demogorgon.controller.executive import ExecutiveController
+        from demogorgon.controller.execution_graph import ExecutionGraph
+        self.controller = ExecutiveController()
+        self.graph = ExecutionGraph()
+
         # Canonical scope validator
         from demogorgon.core.scope import ScopeValidator
         self._scope_validator = ScopeValidator(target_url)
@@ -150,6 +156,12 @@ class ResearchLoop:
         """Run the full research loop."""
         console.print(f"\n[bold green]Research Loop started on {self.target_url}[/bold green]")
         console.print(f"[cyan]Max experiments: {self.config.max_experiments}[/cyan]")
+
+        # Initialize ExecutionGraph with a primary goal
+        self.graph.add_goal(
+            description=f"Find vulnerabilities in {self.target_url}",
+            priority=1.0,
+        )
 
         try:
             # Phase 1: Understand
@@ -690,6 +702,26 @@ RESPOND WITH VALID JSON:
         else:
             self.state.duplicate_streak = 0
 
+        # Register hypothesis with ExecutiveController
+        self.controller.create_hypothesis(
+            description=data.get("hypothesis", ""),
+            vuln_class=data.get("vuln_class", "unknown"),
+            endpoint=data.get("endpoint", ""),
+            confidence=data.get("confidence", 0.5),
+            test_plan=data.get("reasoning", ""),
+        )
+
+        # Register in ExecutionGraph if we have a current goal
+        if self.graph._current_goal:
+            self.graph.add_hypothesis(
+                goal_id=self.graph._current_goal,
+                description=data.get("hypothesis", ""),
+                vuln_class=data.get("vuln_class", "unknown"),
+                endpoint=data.get("endpoint", ""),
+                confidence=data.get("confidence", 0.5),
+                test_plan=data.get("reasoning", ""),
+            )
+
         return data
 
     async def _experiment(self, hypothesis: dict[str, Any]) -> ExperimentResult:
@@ -759,6 +791,58 @@ RESPOND WITH VALID JSON:
         action_key = f"{tool} {action.get('method', 'GET')} {endpoint}"
         self.state.tested_actions.add(action_key)
         self.memory.mark_tested(endpoint, action.get("method", "GET"))
+
+        # Record with ExecutiveController
+        if self.controller.hypotheses:
+            last_hyp_id = list(self.controller.hypotheses.keys())[-1]
+            exp = self.controller.select_experiment()
+            if exp:
+                self.controller.record_experiment_result(
+                    exp.id,
+                    result={"findings": findings, "error": error},
+                    finding=findings[0] if findings else None,
+                )
+
+        # Record in ExecutionGraph
+        if self.graph._current_goal:
+            # Find the latest hypothesis node for this goal
+            hyp_nodes = [
+                n for n in self.graph.nodes.values()
+                if n.node_type.value == "hypothesis"
+                and n.parent_id == self.graph._current_goal
+                and n.status.value == "pending"
+            ]
+            if hyp_nodes:
+                hyp_node = hyp_nodes[-1]
+                self.graph.complete_node(hyp_node.id)
+
+                # Add experiment node
+                exp_node = self.graph.add_experiment(
+                    hypothesis_id=hyp_node.id,
+                    executor=tool,
+                    target=endpoint,
+                )
+                self.graph.complete_node(exp_node.id)
+
+                # Add evidence node
+                ev_node = self.graph.add_evidence(
+                    experiment_id=exp_node.id,
+                    result={"status": "error" if error else "ok", "findings_count": len(findings)},
+                    is_finding=len(findings) > 0,
+                )
+                self.graph.complete_node(ev_node.id)
+
+                # Add finding node if applicable
+                if findings:
+                    for f in findings:
+                        self.graph.add_finding(
+                            evidence_id=ev_node.id,
+                            title=f.get("title", "Unknown"),
+                            severity=f.get("severity", "info"),
+                            vuln_class=vuln_class,
+                            endpoint=endpoint,
+                            evidence=f.get("evidence", []),
+                        )
 
         # Record reasoning
         self.reasoning.complete(
@@ -1230,4 +1314,6 @@ RESPOND WITH VALID JSON:
             "workflows": len(self.app_model.workflows),
             "model_confidence": self.app_model.confidence,
             "coverage": self.evaluator.get_progress_summary(),
+            "controller_coverage": self.controller.get_coverage_report(),
+            "graph_statistics": self.graph.get_statistics(),
         }

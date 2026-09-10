@@ -228,25 +228,10 @@ class ExecutiveController:
         }
 
     def _select_executor(self, vuln_class: str) -> str | None:
-        mapping = {
-            "cors": "cors_detector",
-            "jwt": "jwt_attacker",
-            "idor": "idor_tester",
-            "xss": "xss_detector",
-            "auth_bypass": "auth_bypass_tester",
-            "privesc": "privesc_tester",
-            "sqli": "sqli_detector",
-            "ssrf": "ssrf_tester",
-            "race": "race_detector",
-            "info_disclosure": "info_disclosure_detector",
-            "csrf": "csrf_tester",
-            "file_upload": "upload_tester",
-            "ssti": "ssti_detector",
-            "xxe": "xxe_detector",
-            "open_redirect": "redirect_tester",
-            "business_logic": "logic_tester",
-        }
-        return mapping.get(vuln_class)
+        """Select executor for a vuln class — delegates to EXECUTOR_REGISTRY."""
+        from demogorgon.controller.tool_selection import get_executor_spec
+        spec = get_executor_spec(vuln_class)
+        return spec.name if spec else None
 
     def _create_experiment(self, hyp: Hypothesis, executor: str) -> Experiment:
         self._exp_counter += 1
