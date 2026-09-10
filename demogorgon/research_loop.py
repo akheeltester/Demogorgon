@@ -1016,88 +1016,95 @@ RESPOND WITH VALID JSON:
     # ============================================================
 
     def _build_reasoning_context(self) -> str:
-        """Build context for the LLM reasoning step."""
-        lines = [f"TARGET: {self.target_url}"]
-        lines.append(f"STRATEGY: {self.state.strategy}")
+        """Build context for the LLM reasoning step — structured, budget-aware."""
+        from demogorgon.core.context import ContextBuilder
+
+        cb = ContextBuilder(budget=self.config.context_window_limit)
+
+        # Target + strategy (always included, highest priority)
+        cb.add_section(
+            "target",
+            f"TARGET: {self.target_url}\nSTRATEGY: {self.state.strategy}",
+            priority=100,
+        )
 
         # Application model summary
-        lines.append(f"\nAPP MODEL:")
-        lines.append(f"Product: {self.app_model.product_type.value} - {self.app_model.product_description}")
-        lines.append(f"Roles: {', '.join(f'{r.name}(L{r.level})' for r in self.app_model.user_roles)}")
-        lines.append(f"Ownership: {self.app_model.ownership_model}")
+        model_lines = [
+            f"Product: {self.app_model.product_type.value} - {self.app_model.product_description}",
+            f"Roles: {', '.join(f'{r.name}(L{r.level})' for r in self.app_model.user_roles)}",
+            f"Ownership: {self.app_model.ownership_model}",
+        ]
+        cb.add_section("app_model", "\n".join(model_lines), priority=95)
 
-        # Business objects
+        # Business objects (high value for IDOR testing)
         if self.app_model.business_objects:
-            lines.append(f"\nBUSINESS OBJECTS ({len(self.app_model.business_objects)}):")
+            bo_lines = [f"{len(self.app_model.business_objects)} objects:"]
             by_type: dict[str, list[BusinessObject]] = {}
             for obj in self.app_model.business_objects:
                 by_type.setdefault(obj.object_type, []).append(obj)
             for obj_type, objects in by_type.items():
                 owners = set(o.owner for o in objects if o.owner)
-                lines.append(f"  {obj_type}: {len(objects)} instances, owners: {owners}")
+                bo_lines.append(f"  {obj_type}: {len(objects)} instances, owners: {owners}")
+            cb.add_section("business_objects", "\n".join(bo_lines), priority=90)
 
-        # IDOR candidates
+        # IDOR candidates (critical for attack planning)
         idor = self.app_model.get_idor_candidates()
         if idor:
-            lines.append(f"\nIDOR CANDIDATES ({len(idor)}):")
+            idor_lines = [f"{len(idor)} candidates:"]
             for o1, o2 in idor[:5]:
-                lines.append(f"  {o1.object_type}#{o1.identifier} (owner={o1.owner}) vs {o2.object_type}#{o2.identifier} (owner={o2.owner})")
+                idor_lines.append(f"  {o1.object_type}#{o1.identifier} (owner={o1.owner}) vs {o2.object_type}#{o2.identifier} (owner={o2.owner})")
+            cb.add_section("idor_candidates", "\n".join(idor_lines), priority=88)
 
         # Workflows
         if self.app_model.workflows:
-            lines.append(f"\nWORKFLOWS:")
+            wf_lines = []
             for name, steps in self.app_model.workflows.items():
-                lines.append(f"  {name}: {' -> '.join(s.name for s in steps[:5])}")
+                wf_lines.append(f"  {name}: {' -> '.join(s.name for s in steps[:5])}")
+            cb.add_section("workflows", "\n".join(wf_lines), priority=80)
 
         # Trust boundaries
         if self.app_model.trust_boundaries:
-            lines.append(f"\nTRUST BOUNDARIES ({len(self.app_model.trust_boundaries)}):")
+            tb_lines = [f"{len(self.app_model.trust_boundaries)} boundaries:"]
             for b in self.app_model.trust_boundaries[:5]:
-                lines.append(f"  {b.name}: {b.from_level} -> {b.to_level}")
+                tb_lines.append(f"  {b.name}: {b.from_level} -> {b.to_level}")
+            cb.add_section("trust_boundaries", "\n".join(tb_lines), priority=80)
 
-        # Attack opportunities
+        # Attack opportunities (high value — this is what the LLM reasons about)
         untested_opps = [
             o for o in self.app_model.attack_opportunities
             if f"{o.method} {o.endpoint}" not in self.state.tested_actions
         ]
         if untested_opps:
-            lines.append(f"\nUNTESTED ATTACK OPPORTUNITIES ({len(untested_opps)}):")
+            opp_lines = [f"{len(untested_opps)} untested:"]
             for o in untested_opps[:10]:
-                lines.append(f"  [{o.confidence:.0%}] {o.description}")
-                lines.append(f"    {o.reasoning}")
+                opp_lines.append(f"  [{o.confidence:.0%}] {o.description}")
+                opp_lines.append(f"    {o.reasoning}")
+            cb.add_section("attack_opportunities", "\n".join(opp_lines), priority=85)
 
-        # What's been tested
+        # What's been tested (avoid duplicates)
         if self.state.tested_actions:
-            lines.append(f"\nALREADY TESTED ({len(self.state.tested_actions)}):")
-            for combo in list(self.state.tested_actions)[-15:]:
-                lines.append(f"  {combo}")
+            tested_lines = list(self.state.tested_actions)[-15:]
+            cb.add_section("already_tested", "\n".join(f"  {c}" for c in tested_lines), priority=60)
 
-        # Failed hypotheses
+        # Failed hypotheses (DO NOT RETRY)
         if self.state.failed_hypotheses:
-            lines.append(f"\nFAILED HYPOTHESES (DO NOT RETRY):")
-            for h in list(self.state.failed_hypotheses)[-10:]:
-                lines.append(f"  FAILED: {h}")
+            failed_lines = list(self.state.failed_hypotheses)[-10:]
+            cb.add_section("failed_hypotheses", "\n".join(f"  FAILED: {h}" for h in failed_lines), priority=70)
 
-        # Unvisited endpoints
+        # Unvisited endpoints (discoverability)
         unvisited = [ep for ep in self.memory.endpoints.values()
-                    if ep.url not in self.state.tested_actions and not ep.tested]
+                     if ep.url not in self.state.tested_actions and not ep.tested]
         if unvisited:
-            lines.append(f"\nUNVISITED ENDPOINTS ({len(unvisited)}):")
-            for ep in unvisited[:10]:
-                lines.append(f"  {ep.method} {ep.url}")
+            uv_lines = [f"  {ep.method} {ep.url}" for ep in unvisited[:10]]
+            cb.add_section("unvisited_endpoints", "\n".join(uv_lines), priority=50)
 
-        # Recent evidence
+        # Recent evidence (lowest priority)
         if self.memory.evidence:
-            lines.append(f"\nRECENT EVIDENCE:")
-            for e in self.memory.evidence[-5:]:
-                lines.append(f"  {e.get('method', 'GET')} {e.get('url', '')} -> {e.get('response_status', 'unknown')}")
+            ev_lines = [f"  {e.get('method', 'GET')} {e.get('url', '')} -> {e.get('response_status', 'unknown')}"
+                        for e in self.memory.evidence[-5:]]
+            cb.add_section("recent_evidence", "\n".join(ev_lines), priority=40)
 
-        # Truncate to context window
-        context = "\n".join(lines)
-        if len(context) > self.config.context_window_limit:
-            context = context[:self.config.context_window_limit]
-
-        return context
+        return cb.build()
 
     def _build_understand_context(self) -> str:
         """Build context for the understanding phase."""

@@ -1,4 +1,4 @@
-"""Tests for ScopeValidator, ResearchConfig, and canonical domain models."""
+"""Tests for ScopeValidator, ResearchConfig, canonical domain models, and ContextBuilder."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import pytest
 
 from demogorgon.core.scope import ScopeValidator
 from demogorgon.core.config import ResearchConfig
+from demogorgon.core.context import ContextBuilder
 from demogorgon.core.models import (
     Severity, HypothesisStatus, AttackFamily, ObjectState,
     Finding, Hypothesis, Endpoint, BusinessObject, Observation,
@@ -219,3 +220,66 @@ class TestFindingScore:
         assert fs.title == "XSS reflected"
         assert fs.should_report is False
         assert fs.final_confidence == 0.0
+
+
+# ── ContextBuilder tests ────────────────────────────────────────
+
+class TestContextBuilder:
+    def test_empty_builder(self):
+        cb = ContextBuilder(budget=1000)
+        assert cb.build() == ""
+        assert cb.remaining == 1000
+
+    def test_single_section_fits(self):
+        cb = ContextBuilder(budget=200)
+        cb.add_section("target", "TARGET: https://example.com", priority=100)
+        result = cb.build()
+        assert "TARGET: https://example.com" in result
+
+    def test_priority_ordering(self):
+        cb = ContextBuilder(budget=150)
+        cb.add_section("low", "Low priority content here", priority=10)
+        cb.add_section("high", "High priority content here", priority=90)
+        result = cb.build()
+        # High priority should come first
+        high_pos = result.index("High priority")
+        low_pos = result.index("Low priority")
+        assert high_pos < low_pos
+
+    def test_budget_enforced(self):
+        cb = ContextBuilder(budget=100)
+        cb.add_section("a", "A" * 60, priority=10)
+        cb.add_section("b", "B" * 60, priority=10)
+        result = cb.build()
+        assert len(result) <= 100 + 80  # budget + summary overhead
+
+    def test_empty_sections_skipped(self):
+        cb = ContextBuilder(budget=500)
+        cb.add_section("empty", "", priority=100)
+        cb.add_section("whitespace", "   ", priority=100)
+        cb.add_section("real", "Real content", priority=50)
+        result = cb.build()
+        assert "Real content" in result
+        assert "empty" not in result
+
+    def test_chaining(self):
+        cb = ContextBuilder(budget=500)
+        result = cb.add_section("a", "AAA", priority=1).add_section("b", "BBB", priority=2).build()
+        assert "AAA" in result
+        assert "BBB" in result
+
+    def test_no_mid_line_truncation(self):
+        cb = ContextBuilder(budget=60)
+        cb.add_section("data", "Line one\nLine two\nLine three", priority=10)
+        result = cb.build()
+        # Should include complete lines, not partial
+        for line in result.split("\n"):
+            if line.startswith("Line"):
+                assert line.endswith(("one", "two", "three"))
+
+    def test_usage_tracking(self):
+        cb = ContextBuilder(budget=200)
+        cb.add_section("test", "Hello world", priority=10)
+        cb.build()
+        assert cb.usage_percent > 0
+        assert cb.remaining < 200
