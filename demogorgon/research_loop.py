@@ -141,6 +141,18 @@ class ResearchLoop:
         self.controller = ExecutiveController()
         self.graph = ExecutionGraph()
 
+        # ARE (Adaptive Research Engine) components
+        from demogorgon.are.knowledge_base import KnowledgeBase
+        from demogorgon.are.mutation_intelligence import MutationIntelligence
+        from demogorgon.are.chain_finder import ChainFinder
+        from demogorgon.are.trust_boundary import TrustBoundaryMapper
+        from demogorgon.are.attack_graph import AttackGraph
+        self.knowledge_base = KnowledgeBase()
+        self.mutations = MutationIntelligence()
+        self.chain_finder = ChainFinder()
+        self.trust_mapper = TrustBoundaryMapper()
+        self.attack_graph = AttackGraph()
+
         # Canonical scope validator
         from demogorgon.core.scope import ScopeValidator
         self._scope_validator = ScopeValidator(target_url)
@@ -248,6 +260,32 @@ class ResearchLoop:
             ], self.target_url)
             # Apply the imported session to HTTP client for auth injection
             self.auth.apply_active_to_http(self.http)
+
+        # Detect tech stack via KnowledgeBase
+        try:
+            resp = await self.http.request("GET", self.target_url)
+            if not resp.get("error"):
+                stack = self.knowledge_base.detect_stack(
+                    headers=resp.get("headers", {}),
+                    body=resp.get("body", ""),
+                    url=self.target_url,
+                )
+                if stack:
+                    self.memory.tech_stack = stack
+                    self.app_model.tech_stack = stack
+                    console.print(f"[cyan]Detected stack: {', '.join(stack)}[/cyan]")
+
+                    # Get attack plan from KnowledgeBase
+                    plan = self.knowledge_base.get_attack_plan(stack)
+                    if plan.get("endpoints_to_check"):
+                        for ep in plan["endpoints_to_check"]:
+                            full_url = f"{self.target_url.rstrip('/')}{ep}"
+                            if self._in_scope(full_url):
+                                self.memory.add_endpoint(full_url)
+                    if plan.get("common_vulns"):
+                        console.print(f"[cyan]Common vulns: {', '.join(plan['common_vulns'][:5])}[/cyan]")
+        except Exception as e:
+            console.print(f"[yellow]Stack detection failed: {e}[/yellow]")
 
         # Build initial context for LLM
         self._update_app_model_from_observations()
@@ -898,7 +936,8 @@ RESPOND WITH VALID JSON:
         if not result["error"] and result["status_code"] > 0:
             from demogorgon.detectors import Detector
             detector = Detector()
-            auto_findings = detector.detect(url, result["body"], result["status_code"], method)
+            auto_findings = detector.detect(url, result["body"], result["status_code"], method,
+                                            response_headers=result.get("headers"))
             findings.extend(auto_findings)
 
             if auto_findings:
@@ -914,6 +953,29 @@ RESPOND WITH VALID JSON:
                         reproduction=f.get("steps", "").split("\n"),
                         impact=f.get("impact", ""),
                     )
+                    # Feed finding to ChainFinder for chain discovery
+                    self.chain_finder.add_finding({
+                        "vuln_class": f.get("type", "unknown"),
+                        "endpoint": url,
+                        "param": f.get("parameter", ""),
+                        "evidence": f.get("evidence", ""),
+                        "severity": f.get("severity", "info"),
+                    })
+
+        # Feed endpoint to AttackGraph
+        from demogorgon.are.attack_graph import Node, NodeType
+        node_id = f"ep_{hash(url) % 100000}"
+        if node_id not in self.attack_graph.nodes:
+            self.attack_graph.add_node(Node(
+                id=node_id,
+                name=url,
+                node_type=NodeType.ENDPOINT,
+                properties={
+                    "method": method,
+                    "status_code": result["status_code"],
+                    "response_length": len(result["body"]),
+                },
+            ))
 
         self.memory.add_endpoint(url, method=method, status_code=result["status_code"],
                                   response_length=len(result["body"]),
@@ -1325,4 +1387,17 @@ RESPOND WITH VALID JSON:
             "coverage": self.evaluator.get_progress_summary(),
             "controller_coverage": self.controller.get_coverage_report(),
             "graph_statistics": self.graph.get_statistics(),
+            "chain_summary": self.chain_finder.get_chain_summary(),
+            "reportable_chains": [
+                {
+                    "title": c.title,
+                    "severity": c.severity,
+                    "confidence": c.confidence,
+                    "chain_type": c.chain_type,
+                    "steps": len(c.steps),
+                    "final_impact": c.final_impact,
+                }
+                for c in self.chain_finder.get_reportable_chains()
+            ],
+            "attack_graph": self.attack_graph.get_summary(),
         }
