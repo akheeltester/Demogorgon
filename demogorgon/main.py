@@ -52,6 +52,7 @@ async def main():
             target_url=args.target,
             headless=args.headless,
             proxy=args.proxy,
+            rate_limit=args.rate_limit,
             max_experiments=args.max_iterations,
             output_dir=args.output,
         )
@@ -91,7 +92,8 @@ async def main():
                 target_url=target_url,
                 headless=True,
                 proxy=args.proxy,
-                max_experiments=30,
+                rate_limit=args.rate_limit,
+                max_experiments=args.max_iterations,
                 output_dir=f"{args.output}_benchmark",
             )
             result = await r.start()

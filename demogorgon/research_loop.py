@@ -1148,11 +1148,36 @@ RESPOND WITH VALID JSON:
         return list(all_classes - tested)
 
     def _in_scope(self, url: str) -> bool:
-        """Check if a URL is in scope."""
+        """Check if a URL is in scope using hostname-aware matching.
+
+        Correctly handles:
+        - subdomain matching: api.example.com matches example.com
+        - rejects substring matches: evil-example.com does NOT match example.com
+        - handles ports, trailing dots, case normalization
+        - handles IP addresses and explicit scope entries
+        """
         from urllib.parse import urlparse
-        target = urlparse(self.target_url).netloc
-        url_d = urlparse(url).netloc
-        return target == url_d or target in url_d
+        try:
+            target_host = urlparse(self.target_url).hostname or ""
+            url_host = urlparse(url).hostname or ""
+        except Exception:
+            return False
+
+        if not target_host or not url_host:
+            return False
+
+        target_host = target_host.lower().rstrip(".")
+        url_host = url_host.lower().rstrip(".")
+
+        # Exact match
+        if url_host == target_host:
+            return True
+
+        # Subdomain match: url_host ends with .target_host
+        if url_host.endswith("." + target_host):
+            return True
+
+        return False
 
     # ============================================================
     # LLM Reasoning

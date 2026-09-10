@@ -60,14 +60,16 @@ class AuthManager:
         session = AuthSession(
             label=label,
             role=role_enum,
-            auth_type=AuthType.COOKIE,
+            auth_type=AuthType.COOKIE if not token else AuthType.BEARER,
             target_domain=domain,
             cookies=cookie_jar,
             headers=header_set,
         )
 
         if token:
-            session.set_bearer_token(token)
+            from .authcore.session import JWTToken
+            session.jwt = JWTToken(token=token, token_type="Bearer")
+            session.auth_type = AuthType.BEARER
 
         if user_id:
             session.account.user_id = user_id

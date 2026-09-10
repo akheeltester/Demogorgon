@@ -43,12 +43,14 @@ class ResearcherV3:
         target_url: str,
         headless: bool = True,
         proxy: str | None = None,
+        rate_limit: float = 1.0,
         max_experiments: int = 50,
         output_dir: str = "hunt_output_v3",
     ):
         self.target_url = target_url
         self.headless = headless
         self.proxy = proxy
+        self.rate_limit = rate_limit
         self.max_experiments = max_experiments
         self.output_dir = output_dir
 
@@ -77,7 +79,7 @@ class ResearcherV3:
         config = LoopConfig(
             max_experiments=self.max_experiments,
             self_eval_interval=20,
-            rate_limit_delay=1.0,
+            rate_limit_delay=self.rate_limit,
         )
 
         self._loop = ResearchLoop(

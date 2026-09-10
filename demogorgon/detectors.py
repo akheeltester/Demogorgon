@@ -17,14 +17,14 @@ class Detector:
             re.IGNORECASE,
         )
 
-    def detect(self, url: str, response_body: str, status_code: int, request_method: str = "GET") -> list[dict[str, Any]]:
+    def detect(self, url: str, response_body: str, status_code: int, request_method: str = "GET", response_headers: dict | None = None) -> list[dict[str, Any]]:
         findings = []
         findings.extend(self.detect_idor(url, response_body, status_code))
         findings.extend(self.detect_sqli(url, response_body, status_code))
         findings.extend(self.detect_xss(url, response_body))
         findings.extend(self.detect_open_redirect(url, response_body))
         findings.extend(self.detect_info_disclosure(url, response_body))
-        findings.extend(self.detect_misconfigured_headers(url, response_body, status_code))
+        findings.extend(self.detect_misconfigured_headers(url, response_body, status_code, response_headers))
         findings.extend(self.detect_path_traversal(url, response_body))
         findings.extend(self.detect_command_injection(url, response_body))
         findings.extend(self.detect_ssrf(url, response_body))
@@ -156,8 +156,14 @@ class Detector:
                 })
         return findings
 
-    def detect_misconfigured_headers(self, url: str, body: str, status: int) -> list[dict[str, Any]]:
+    def detect_misconfigured_headers(self, url: str, body: str, status: int, response_headers: dict | None = None) -> list[dict[str, Any]]:
         findings = []
+        if response_headers is None:
+            return findings
+
+        # Normalize response header keys to lowercase for case-insensitive comparison
+        present_headers = {k.lower() for k in response_headers.keys()}
+
         critical_headers = [
             ("X-Frame-Options", "Clickjacking protection missing"),
             ("X-Content-Type-Options", "MIME type sniffing protection missing"),
@@ -166,7 +172,7 @@ class Detector:
             ("X-XSS-Protection", "XSS filter protection missing"),
         ]
         for header_name, desc in critical_headers:
-            if header_name.lower() not in {k.lower() for k in []}:
+            if header_name.lower() not in present_headers:
                 findings.append({
                     "title": f"Security Header Missing — {desc}",
                     "severity": "Low",

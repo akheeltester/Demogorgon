@@ -71,7 +71,7 @@ class InfoDisclosureDetector:
                 })
 
             server = resp_headers.get("server", "")
-            if server and "nginx" in server.lower() or "apache" in server.lower():
+            if server and ("nginx" in server.lower() or "apache" in server.lower()):
                 findings.append({
                     "title": f"Server version disclosed: {server}",
                     "severity": "low",

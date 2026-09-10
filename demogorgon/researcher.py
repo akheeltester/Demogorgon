@@ -54,8 +54,11 @@ class Researcher:
 
         self._headless = headless
         self._proxy = proxy
+        self._rate_limit = rate_limit
         self.browser = None
-        self.http = HTTPClient(proxy=proxy, rps=rate_limit)
+        # Convert seconds-between-requests to requests-per-second
+        rps = 1.0 / max(rate_limit, 0.1)
+        self.http = HTTPClient(proxy=proxy, rps=rps)
 
         target_domain = ""
         try:
@@ -92,7 +95,7 @@ class Researcher:
         config = LoopConfig(
             max_experiments=self.max_iterations,
             self_eval_interval=20,
-            rate_limit_delay=1.0,
+            rate_limit_delay=self._rate_limit,
         )
 
         self._loop = ResearchLoop(
