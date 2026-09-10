@@ -246,6 +246,8 @@ class ResearchLoop:
                 {"name": k, "value": v, "domain": self.target_url}
                 for k, v in tokens.cookies.items()
             ], self.target_url)
+            # Apply the imported session to HTTP client for auth injection
+            self.auth.apply_active_to_http(self.http)
 
         # Build initial context for LLM
         self._update_app_model_from_observations()
@@ -946,6 +948,13 @@ RESPOND WITH VALID JSON:
                 break
         if not target:
             target = {"method": method, "url": url, "headers": headers, "body": body}
+
+        # Inject auth into replayed request headers
+        active = self.auth.get_active()
+        if active:
+            target_headers = target.get("headers", {})
+            target_headers, _ = self.auth.apply_to_request(active.label, target_headers, {})
+            target["headers"] = target_headers
 
         from demogorgon.tools.replay import HTTPReplay
         replay = HTTPReplay(self.http)

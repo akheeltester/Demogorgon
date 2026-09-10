@@ -170,3 +170,50 @@ class AuthManager:
 
     def to_summary(self) -> dict[str, Any]:
         return self.store.to_summary()
+
+    # ── AuthCore-powered methods ───────────────────────────────
+
+    def create_role_sessions(
+        self,
+        roles: list[dict[str, str]],
+        domain: str | None = None,
+    ) -> list[AuthSession]:
+        """Create multiple sessions for different roles (for RBAC testing).
+
+        Args:
+            roles: List of dicts with keys: label, role, cookies/token, user_id
+            domain: Override domain (defaults to self.target_domain)
+        """
+        domain = domain or self.target_domain
+        sessions = []
+        for role_def in roles:
+            session = self.create_session(
+                label=role_def.get("label", f"role_{role_def.get('role', 'user')}"),
+                cookies=role_def.get("cookies"),
+                headers=role_def.get("headers"),
+                token=role_def.get("token"),
+                role=role_def.get("role", "user"),
+                user_id=role_def.get("user_id", ""),
+                username=role_def.get("username", ""),
+                org_id=role_def.get("org_id", ""),
+            )
+            sessions.append(session)
+        return sessions
+
+    def get_sessions_for_role(self, role: str) -> list[AuthSession]:
+        """Get all sessions with a specific role."""
+        return [s for s in self.sessions.values() if s.role.value == role]
+
+    def get_role_hierarchy(self) -> dict[str, list[str]]:
+        """Get sessions organized by role for RBAC testing."""
+        hierarchy: dict[str, list[str]] = {}
+        for label, session in self.sessions.items():
+            role = session.role.value
+            hierarchy.setdefault(role, []).append(label)
+        return hierarchy
+
+    def apply_active_to_http(self, http_client) -> None:
+        """Apply the active session to an HTTPClient for auth injection."""
+        active = self.get_active()
+        if active:
+            http_client.set_auth_session(active)

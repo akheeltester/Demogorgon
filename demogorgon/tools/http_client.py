@@ -86,9 +86,22 @@ class HTTPClient:
         self._client: httpx.AsyncClient | None = None
         self.request_count = 0
         self.total_time = 0.0
+        self._auth_session = None  # Direct AuthCore session reference
+
+    def set_auth_session(self, session) -> None:
+        """Set an AuthCore session for auth injection on all subsequent requests."""
+        self._auth_session = session
+        # Also set the contextvar for any code using the module-level functions
+        set_auth_session(session)
+
+    def clear_auth_session(self) -> None:
+        """Clear the auth session."""
+        self._auth_session = None
+        clear_auth_session()
 
     async def _get_client(self, burp: bool = False) -> httpx.AsyncClient:
-        session = get_auth_session()
+        # Prefer instance-level session, fall back to contextvar
+        session = self._auth_session or get_auth_session()
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                           "AppleWebKit/537.36 (KHTML, like Gecko) "
