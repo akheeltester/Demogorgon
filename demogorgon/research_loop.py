@@ -162,6 +162,10 @@ class ResearchLoop:
         from demogorgon.core.scope import ScopeValidator
         self._scope_validator = ScopeValidator(target_url)
 
+        # Checkpoint for crash recovery
+        from demogorgon.tools.checkpoint import Checkpoint
+        self.checkpoint = Checkpoint(checkpoint_dir=f".demogorgon/checkpoints/{target_url}")
+
         # Deterministic executors (lazy loaded)
         self._executors: dict[str, Any] = {}
 
@@ -173,6 +177,9 @@ class ResearchLoop:
         """Run the full research loop."""
         console.print(f"\n[bold green]Research Loop started on {self.target_url}[/bold green]")
         console.print(f"[cyan]Max experiments: {self.config.max_experiments}[/cyan]")
+
+        # Attempt to restore from checkpoint
+        restored = self._load_checkpoint()
 
         # Initialize ExecutionGraph with a primary goal
         self.graph.add_goal(
@@ -191,10 +198,12 @@ class ResearchLoop:
             await self._phase_reason_experiment_cycle()
 
             # Final: Validate and Report
+            self._save_checkpoint()
             return self._generate_report()
 
         except KeyboardInterrupt:
             console.print("\n[yellow]Research loop interrupted[/yellow]")
+            self._save_checkpoint()
             return self._generate_report()
         except Exception as e:
             console.print(f"\n[red]Research loop error: {e}[/red]")
@@ -640,6 +649,10 @@ RESPOND WITH VALID JSON:
             # Self-evaluate every 20 experiments
             if self.state.should_self_eval:
                 self._self_evaluate()
+
+            # Checkpoint every 10 experiments
+            if self.state.experiment_count > 0 and self.state.experiment_count % 10 == 0:
+                self._save_checkpoint()
 
             # Check stagnation
             if self.state.stagnation_count >= self.config.stagnation_threshold:
@@ -1178,6 +1191,44 @@ RESPOND WITH VALID JSON:
                     reasoning=f"Pivot to untested vulnerability class: {vc}",
                 ))
             self.state.strategy = "explore"
+
+    # ============================================================
+    # Checkpoint / Resume
+    # ============================================================
+
+    def _save_checkpoint(self):
+        """Save state for crash recovery."""
+        self.checkpoint.update("experiment_count", self.state.experiment_count)
+        self.checkpoint.update("finding_count", self.state.finding_count)
+        self.checkpoint.update("observation_count", self.state.observation_count)
+        self.checkpoint.update("strategy", self.state.strategy)
+        self.checkpoint.update("stagnation_count", self.state.stagnation_count)
+        self.checkpoint.update("tested_actions", list(self.state.tested_actions))
+        self.checkpoint.update("failed_hypotheses", list(self.state.failed_hypotheses))
+        self.checkpoint.update("finding_scores", self._finding_scores)
+        self.memory.save()
+        self.checkpoint.save_sync()
+
+    def _load_checkpoint(self) -> bool:
+        """Load state from checkpoint. Returns True if restored."""
+        if not self.checkpoint.load_sync():
+            return False
+        self.state.experiment_count = self.checkpoint.get("experiment_count", 0)
+        self.state.finding_count = self.checkpoint.get("finding_count", 0)
+        self.state.observation_count = self.checkpoint.get("observation_count", 0)
+        self.state.strategy = self.checkpoint.get("strategy", "explore")
+        self.state.stagnation_count = self.checkpoint.get("stagnation_count", 0)
+        self.state.tested_actions = set(self.checkpoint.get("tested_actions", []))
+        self.state.failed_hypotheses = set(self.checkpoint.get("failed_hypotheses", []))
+        self._finding_scores = self.checkpoint.get("finding_scores", [])
+
+        # Restore memory from saved state
+        restored = Memory.load(self.target_url)
+        if restored:
+            self.memory = restored
+            console.print(f"[green]Restored from checkpoint: {self.state.experiment_count} experiments, {self.state.finding_count} findings[/green]")
+            return True
+        return False
 
     def _self_evaluate(self):
         """Self-evaluate progress every 20 experiments."""

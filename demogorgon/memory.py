@@ -290,3 +290,63 @@ class Memory:
             "summary": self.get_summary(),
         }
         path.write_text(json.dumps(data, indent=2, default=str))
+
+    @classmethod
+    def load(cls, target_url: str, filename: str = "hunt_state.json",
+             output_dir: str = "hunt_output") -> Memory | None:
+        """Load saved state. Returns None if no checkpoint exists."""
+        path = Path(output_dir) / filename
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text())
+            mem = cls(target_url, output_dir)
+            mem.tech_stack = data.get("tech_stack", [])
+            mem.auth_state = data.get("auth_state", {})
+            mem.scope = data.get("scope", [])
+            mem.current_user = data.get("current_user")
+            mem.current_role = data.get("current_role")
+
+            for url_str, ep_data in data.get("endpoints", {}).items():
+                mem.endpoints[url_str] = Endpoint(
+                    url=ep_data["url"],
+                    method=ep_data.get("method", "GET"),
+                    status_code=ep_data.get("status_code", 0),
+                    tech_stack=ep_data.get("tech_stack", []),
+                    auth_required=ep_data.get("auth_required", False),
+                    tested=ep_data.get("tested", False),
+                    request=ep_data.get("request"),
+                )
+
+            for h_data in data.get("hypotheses", []):
+                mem.hypotheses.append(Hypothesis(
+                    id=h_data.get("id", ""),
+                    description=h_data.get("description", ""),
+                    vuln_class=h_data.get("vuln_class", ""),
+                    endpoint=h_data.get("endpoint", ""),
+                    confidence=h_data.get("confidence", 0.5),
+                    test_plan=h_data.get("test_plan", ""),
+                ))
+
+            for f_data in data.get("findings", []):
+                sev = f_data.get("severity", "info")
+                if isinstance(sev, str):
+                    sev = Severity(sev)
+                mem.findings.append(Finding(
+                    title=f_data.get("title", ""),
+                    severity=sev,
+                    vuln_class=f_data.get("vuln_class", ""),
+                    endpoint=f_data.get("endpoint", ""),
+                    method=f_data.get("method", "GET"),
+                    evidence=f_data.get("evidence", []),
+                    reproduction=f_data.get("reproduction", []),
+                    impact=f_data.get("impact", ""),
+                    confirmed=f_data.get("confirmed", True),
+                    confidence=f_data.get("confidence", 0),
+                ))
+
+            mem.tested_urls = set(data.get("tested_urls", []))
+            mem.failed_tests = data.get("failed_tests", [])
+            return mem
+        except (json.JSONDecodeError, KeyError, IOError):
+            return None
