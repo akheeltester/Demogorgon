@@ -1,16 +1,26 @@
 """LLM Manager — provider selection, configuration, retry, and fallback.
 
-Configuration via environment variables:
-    DEMOGORGON_LLM_PROVIDER=openai|ollama|deepseek|anthropic|openrouter
+Supports multiple configuration formats (highest priority first):
+
+1. DEMOGORGON_* prefix (recommended):
+    DEMOGORGON_LLM_PROVIDER=openai|openrouter|anthropic|deepseek|ollama
     DEMOGORGON_API_KEY=api_key
     DEMOGORGON_MODEL=model_name
     DEMOGORGON_BASE_URL=base_url
-    DEMOGORGON_FALLBACK_PROVIDER=provider_name
-    DEMOGORGON_FALLBACK_MODEL=model_name
-    DEMOGORGON_LLM_MAX_RETRIES=2
-    DEMOGORGON_LLM_TIMEOUT=60
 
-Also reads legacy env vars (LLM_PROVIDER, LLM_API_KEY, etc.) as fallback.
+2. LLM_* prefix (legacy):
+    LLM_PROVIDER=openai
+    LLM_API_KEY=api_key
+    LLM_MODEL=model_name
+    LLM_BASE_URL=base_url
+
+3. Provider-specific prefix:
+    OPENROUTER_API_KEY + OPENROUTER_BASE_URL
+    NVIDIA_API_KEY + NVIDIA_BASE_URL
+    OPENCODE_API_KEY + OPENCODE_BASE_URL
+
+4. Model aliases:
+    PRIMARY_MODEL=model_name (used if DEMOGORGON_MODEL/LLM_MODEL not set)
 """
 
 from __future__ import annotations
@@ -25,6 +35,22 @@ from typing import Any
 from demogorgon.llm.base import LLMProvider, LLMResponse
 
 logger = logging.getLogger(__name__)
+
+# Known provider defaults
+PROVIDER_DEFAULTS = {
+    "openai": {"base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
+    "openrouter": {"base_url": "https://openrouter.ai/api/v1", "model": "nvidia/llama-3.1-nemotron-70b-instruct:free"},
+    "anthropic": {"base_url": "", "model": "claude-sonnet-4-20250514"},
+    "deepseek": {"base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat"},
+    "ollama": {"base_url": "http://localhost:11434/v1", "model": "llama3.1:8b"},
+}
+
+# Provider detection from env vars
+PROVIDER_ENV_MAP = {
+    "OPENROUTER_API_KEY": "openrouter",
+    "NVIDIA_API_KEY": "openrouter",  # NVIDIA uses OpenAI-compatible API
+    "OPENCODE_API_KEY": "openai",    # OpenCode uses OpenAI-compatible API
+}
 
 
 def _load_env() -> dict[str, str]:
@@ -55,6 +81,68 @@ def _mask_key(key: str) -> str:
     return f"{key[:4]}...{key[-4:]}"
 
 
+def _detect_provider_from_env(env: dict[str, str]) -> tuple[str, str, str, str]:
+    """Auto-detect provider, api_key, base_url, model from any env format.
+
+    Returns (provider_name, api_key, base_url, model).
+    """
+    # 1. Explicit DEMOGORGON_ vars (highest priority)
+    provider = env.get("DEMOGORGON_LLM_PROVIDER", "")
+    api_key = env.get("DEMOGORGON_API_KEY", "")
+    base_url = env.get("DEMOGORGON_BASE_URL", "")
+    model = env.get("DEMOGORGON_MODEL", "")
+
+    # 2. Legacy LLM_ vars
+    if not provider:
+        provider = env.get("LLM_PROVIDER", "")
+    if not api_key:
+        api_key = env.get("LLM_API_KEY", "")
+    if not base_url:
+        base_url = env.get("LLM_BASE_URL", "")
+    if not model:
+        model = env.get("LLM_MODEL", "")
+
+    # 3. PRIMARY_MODEL alias (common in older setups)
+    if not model:
+        model = env.get("PRIMARY_MODEL", "")
+
+    # 4. Provider-specific env vars (auto-detect provider if not set)
+    if not api_key:
+        for env_prefix, detected_provider in PROVIDER_ENV_MAP.items():
+            key = env.get(f"{env_prefix}", "")
+            if key:
+                api_key = key
+                if not provider:
+                    provider = detected_provider
+                # Set base_url from provider-specific var
+                base_url_key = env_prefix.replace("_API_KEY", "_BASE_URL")
+                if not base_url:
+                    base_url = env.get(base_url_key, "")
+                break
+
+    # 5. If still no provider but we have an API key, try to detect
+    if not provider and api_key:
+        if "sk-or-" in api_key:
+            provider = "openrouter"
+        elif "nvapi-" in api_key:
+            provider = "openrouter"  # NVIDIA uses OpenAI-compatible
+        else:
+            provider = "openai"
+
+    # 6. Default provider
+    if not provider:
+        provider = "openai"
+
+    # 7. Apply provider defaults for missing values
+    defaults = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["openai"])
+    if not base_url:
+        base_url = defaults["base_url"]
+    if not model:
+        model = defaults["model"]
+
+    return provider, api_key, base_url, model
+
+
 class LLMManager:
     """Manages LLM providers with retry, fallback, and failure handling.
 
@@ -78,53 +166,35 @@ class LLMManager:
 
     def configure(self) -> None:
         """Configure providers from environment variables."""
-        # DEMOGORGON_ prefix takes precedence, then legacy LLM_ prefix
-        provider_name = (
-            self._env.get("DEMOGORGON_LLM_PROVIDER")
-            or self._env.get("LLM_PROVIDER", "openai")
-        )
-        model = (
-            self._env.get("DEMOGORGON_MODEL")
-            or self._env.get("LLM_MODEL", "")
-        )
-        api_key = (
-            self._env.get("DEMOGORGON_API_KEY")
-            or self._env.get("LLM_API_KEY", "")
-        )
-        base_url = (
-            self._env.get("DEMOGORGON_BASE_URL")
-            or self._env.get("LLM_BASE_URL", "")
-        )
-        self._fallback_provider = (
-            self._env.get("DEMOGORGON_FALLBACK_PROVIDER", "")
-        )
-        self._fallback_model = (
-            self._env.get("DEMOGORGON_FALLBACK_MODEL", "")
-        )
+        provider_name, api_key, base_url, model = _detect_provider_from_env(self._env)
+
         self._max_retries = int(
-            self._env.get("DEMOGORGON_LLM_MAX_RETRIES", "2")
+            self._env.get("DEMOGORGON_LLM_MAX_RETRIES",
+                          self._env.get("LLM_MAX_RETRIES", "2"))
         )
         self._timeout = float(
-            self._env.get("DEMOGORGON_LLM_TIMEOUT", "60")
+            self._env.get("DEMOGORGON_LLM_TIMEOUT",
+                          self._env.get("LLM_TIMEOUT", "60"))
         )
-
-        # OpenRouter fallback
-        if not api_key:
-            api_key = self._env.get("OPENROUTER_API_KEY", "")
-            if not base_url:
-                base_url = self._env.get(
-                    "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
-                )
 
         self._configure_provider(provider_name, api_key, base_url, model)
 
         # Configure fallback if specified
-        if self._fallback_provider and self._fallback_provider != provider_name:
-            fb_model = self._fallback_model or model
-            fb_key = api_key  # Same key by default
+        fallback_provider = (
+            self._env.get("DEMOGORGON_FALLBACK_PROVIDER", "")
+            or self._env.get("LLM_FALLBACK_PROVIDER", "")
+        )
+        fallback_model = (
+            self._env.get("DEMOGORGON_FALLBACK_MODEL", "")
+            or self._env.get("LLM_FALLBACK_MODEL", "")
+            or self._env.get("FALLBACK_MODEL", "")
+        )
+        if fallback_provider and fallback_provider != provider_name:
+            fb_model = fallback_model or model
+            fb_key = api_key
             fb_url = base_url
             self._configure_provider(
-                self._fallback_provider, fb_key, fb_url, fb_model, is_fallback=True
+                fallback_provider, fb_key, fb_url, fb_model, is_fallback=True
             )
 
     def _configure_provider(
@@ -146,8 +216,8 @@ class LLMManager:
             if name in ("openai", "openrouter"):
                 from demogorgon.llm.providers.openai import OpenAIProvider
 
-                url = base_url or "https://api.openai.com/v1"
-                mdl = model or "gpt-4o-mini"
+                url = base_url or PROVIDER_DEFAULTS["openai"]["base_url"]
+                mdl = model or PROVIDER_DEFAULTS["openai"]["model"]
                 self._providers[provider_key] = OpenAIProvider(
                     api_key=api_key,
                     base_url=url,
@@ -156,17 +226,18 @@ class LLMManager:
             elif name == "deepseek":
                 from demogorgon.llm.providers.openai import OpenAIProvider
 
+                url = base_url or PROVIDER_DEFAULTS["deepseek"]["base_url"]
+                mdl = model or PROVIDER_DEFAULTS["deepseek"]["model"]
                 self._providers[provider_key] = OpenAIProvider(
                     api_key=api_key,
-                    base_url="https://api.deepseek.com/v1",
-                    default_model=model or "deepseek-chat",
+                    base_url=url,
+                    default_model=mdl,
                 )
-                mdl = model or "deepseek-chat"
             elif name == "ollama":
                 from demogorgon.llm.providers.openai import OpenAIProvider
 
-                url = base_url or "http://localhost:11434/v1"
-                mdl = model or "llama3.1:8b"
+                url = base_url or PROVIDER_DEFAULTS["ollama"]["base_url"]
+                mdl = model or PROVIDER_DEFAULTS["ollama"]["model"]
                 self._providers[provider_key] = OpenAIProvider(
                     api_key="ollama",
                     base_url=url,
@@ -175,12 +246,13 @@ class LLMManager:
             elif name == "anthropic":
                 from demogorgon.llm.providers.anthropic import AnthropicProvider
 
-                mdl = model or "claude-sonnet-4-20250514"
+                mdl = model or PROVIDER_DEFAULTS["anthropic"]["model"]
                 self._providers[provider_key] = AnthropicProvider(
                     api_key=api_key,
                     default_model=mdl,
                 )
             else:
+                # Unknown provider — try OpenAI-compatible
                 from demogorgon.llm.providers.openai import OpenAIProvider
 
                 url = base_url or "https://api.openai.com/v1"
@@ -196,7 +268,7 @@ class LLMManager:
 
         if not is_fallback:
             self._active_provider = provider_key
-            self._active_model = model or "gpt-4o-mini"
+            self._active_model = model or PROVIDER_DEFAULTS.get(name, {}).get("model", "gpt-4o-mini")
         logger.info(
             f"Configured LLM provider: {name} (model: {model})"
             + (" [fallback]" if is_fallback else "")

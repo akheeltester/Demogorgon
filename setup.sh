@@ -44,18 +44,18 @@ echo "[+] Activated venv ($(python --version))"
 
 # ── Install dependencies ──────────────────────────────────────────────────
 echo "[+] Installing dependencies..."
-pip install --upgrade pip -q
-pip install -r requirements.txt -q
+pip install --upgrade pip
+pip install -r requirements.txt
 
 # ── Install Playwright browsers ───────────────────────────────────────────
 echo "[+] Installing Playwright browsers..."
-python -m playwright install chromium -q
+python -m playwright install chromium
 
 # ── Setup .env ────────────────────────────────────────────────────────────
 if [ ! -f ".env" ]; then
     cp .env.example .env
     echo "[+] Created .env from .env.example"
-    echo "[!] Edit .env and add your OPENROUTER_API_KEY"
+    echo "[!] Edit .env and add your API key (DEMOGORGON_API_KEY or OPENROUTER_API_KEY)"
 else
     echo "[+] .env already exists"
 fi
@@ -64,7 +64,7 @@ fi
 echo ""
 echo "[+] Validating installation..."
 python -c "
-import httpx, rich, openai, playwright, jwt, cryptography
+import httpx, rich, openai, playwright
 print('  [+] All core imports OK')
 " 2>/dev/null || echo "  [-] Some imports failed — check requirements.txt"
 
@@ -75,7 +75,18 @@ echo ""
 echo "  Quick start:"
 echo "    1. Edit .env and add your API key"
 echo "    2. Run: source venv/bin/activate"
-echo "    3. Run: python -m demogorgon https://target.com"
+echo "    3. Run: python -m demogorgon doctor   # verify LLM works"
+echo "    4. Run: python -m demogorgon https://target.com"
+echo ""
+echo "  Supported providers in .env:"
+echo "    DEMOGORGON_LLM_PROVIDER=openai|openrouter|anthropic|deepseek|ollama"
+echo "    DEMOGORGON_API_KEY=your-key"
+echo "    DEMOGORGON_MODEL=gpt-4o-mini"
+echo ""
+echo "  Or use legacy format:"
+echo "    OPENROUTER_API_KEY=sk-or-..."
+echo "    OPENROUTER_BASE_URL=https://openrouter.ai/api/v1"
+echo "    PRIMARY_MODEL=nvidia/llama-3.1-nemotron-70b-instruct:free"
 echo ""
 echo "  Test with OWASP Juice Shop:"
 echo "    docker run -d -p 3000:3000 bkimminich/juice-shop"
