@@ -605,6 +605,12 @@ Examples:
     
     args = parser.parse_args()
     
+    # Handle case where command is passed as target (e.g., "demogorgon doctor")
+    known_commands = {"resume", "status", "findings", "report", "setup", "doctor"}
+    if args.target in known_commands and not args.command:
+        args.command = args.target
+        args.target = None
+    
     if args.program:
         await cmd_program()
     elif args.command == "resume":
