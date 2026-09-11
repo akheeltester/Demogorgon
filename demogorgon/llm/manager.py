@@ -39,8 +39,9 @@ logger = logging.getLogger(__name__)
 # Known provider defaults
 PROVIDER_DEFAULTS = {
     "openai": {"base_url": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
-    "openrouter": {"base_url": "https://openrouter.ai/api/v1", "model": "nvidia/llama-3.1-nemotron-70b-instruct:free"},
+    "openrouter": {"base_url": "https://openrouter.ai/api/v1", "model": "nvidia/nemotron-3-super-120b-a12b:free"},
     "anthropic": {"base_url": "", "model": "claude-sonnet-4-20250514"},
+    "gemini": {"base_url": "", "model": "gemini-2.0-flash"},
     "deepseek": {"base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat"},
     "ollama": {"base_url": "http://localhost:11434/v1", "model": "llama3.1:8b"},
 }
@@ -48,8 +49,13 @@ PROVIDER_DEFAULTS = {
 # Provider detection from env vars
 PROVIDER_ENV_MAP = {
     "OPENROUTER_API_KEY": "openrouter",
-    "NVIDIA_API_KEY": "openrouter",  # NVIDIA uses OpenAI-compatible API
-    "OPENCODE_API_KEY": "openai",    # OpenCode uses OpenAI-compatible API
+    "NVIDIA_API_KEY": "openrouter",      # NVIDIA uses OpenAI-compatible API
+    "OPENCODE_API_KEY": "openai",        # OpenCode uses OpenAI-compatible API
+    "GEMINI_API_KEY": "gemini",
+    "GOOGLE_API_KEY": "gemini",
+    "ANTHROPIC_API_KEY": "anthropic",
+    "OPENAI_API_KEY": "openai",
+    "DEEPSEEK_API_KEY": "deepseek",
 }
 
 
@@ -248,6 +254,14 @@ class LLMManager:
 
                 mdl = model or PROVIDER_DEFAULTS["anthropic"]["model"]
                 self._providers[provider_key] = AnthropicProvider(
+                    api_key=api_key,
+                    default_model=mdl,
+                )
+            elif name == "gemini":
+                from demogorgon.llm.providers.gemini import GeminiProvider
+
+                mdl = model or PROVIDER_DEFAULTS["gemini"]["model"]
+                self._providers[provider_key] = GeminiProvider(
                     api_key=api_key,
                     default_model=mdl,
                 )
