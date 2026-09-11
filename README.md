@@ -12,41 +12,48 @@
   <img src="https://readme-typing-svg.herokuapp.com/?font=Pixelify+Sans&weight=700&size=55&pause=2000&color=E50914&center=true&vCenter=true&width=600&lines=DEMOGORGON;" alt="Demogorgon Animated Text" />
 </div>
 
-### **Autonomous Bug Bounty Hunter Powered by LLM Reasoning**
+### **Autonomous Bug Bounty Research Agent — LLM-Driven, Scope-Aware, Human-Overrideable**
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Active-brightred)](https://github.com/akheeltester/Demogorgon)
+[![Status](https://img.shields.io/badge/Status-Phase_10.1-brightred)](https://github.com/akheeltester/Demogorgon)
 
 ---
 
-**Demogorgon** doesn't just scanner it is an **Organism** **thinks** like Human. It forms hypotheses, designs experiments,
-executes them, and evaluates results like a senior penetration tester.
+**Demogorgon** is a general-purpose autonomous security research agent. Give it any authorized bug bounty target and it will:
+- Parse scope from any platform (HackerOne, Bugcrowd, Intigriti, Immunefi, custom)
+- Enumerate subdomains and discover live assets
+- Crawl endpoints, build an application model, and map the attack surface
+- Use LLM reasoning to form hypotheses, design experiments, and select next actions
+- Execute tests safely through an ActionGateway with scope enforcement + human-in-the-loop
+- Collect evidence, validate findings, detect bug chains, and generate reports
+
+The LLM is ONE reasoning component inside the brain — deterministic code handles execution, safety, and validation.
 
 </div>
 
 ---
 
-## How It Works
+## Architecture
 
 ```
-  TARGET Domain
-      │
-      ▼
+  Program Policy (any platform)
+       │
+       ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    DEMOGORGON PIPELINE                          │
-├─────────────┬──────────────┬──────────────┬────────────────────┤
-│  STAGE 1    │   STAGE 2    │   STAGE 3    │     STAGE 4        │
-│  DISCOVER   │   UNDERSTAND │   HYPOTHESIZE│     EXECUTE        │
-│             │              │              │                    │
-│ • Browser   │ • Product    │ • IDOR       │ • HTTP Replay      │
-│ • Endpoints │   Type       │ • XSS        │ • Auth Bypass      │
-│ • JS/API    │ • Roles      │ • SSRF       │ • CSRF             │
-│ • Forms     │ • Workflows  │ • SQLi       │ • Race Conditions  │
-│ • Tokens    │ • Trust      │ • Logic      │ • File Upload      │
-│             │   Boundaries │ • Priv Esc   │ • SSTI / XXE       │
-├─────────────┴──────────────┴──────────────┴────────────────────┤
-│                    EVIDENCE → FINDINGS → REPORT                 │
+├──────────────┬──────────────┬──────────────┬───────────────────┤
+│  PHASE 1     │  PHASE 2-4   │  PHASE 5-6   │  PHASE 7-10      │
+│  ENGAGEMENT  │  RECON       │  RESEARCH     │  EVIDENCE        │
+│              │              │  BRAIN        │                  │
+│ • Scope      │ • Subdomain  │ • LLM Reason  │ • Packager       │
+│ • Policy     │   enum       │ • Hypothesis  │ • Chain Detect   │
+│ • Safety     │ • Live hosts │ • Experiment  │ • Validation     │
+│   Gate       │ • Crawl      │   Planner    │ • Report Gen     │
+│ • HITL Gate  │ • App Model  │ • Next Best   │ • State Persist  │
+│              │              │   Action     │                  │
+├──────────────┴──────────────┴──────────────┴───────────────────┤
+│         ActionGateway → Scope Check → Safety → HITL → Execute  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -54,42 +61,65 @@ executes them, and evaluates results like a senior penetration tester.
 
 ## Quick Start
 
-### 1. Clone & Setup (one command)
+### 1. Clone & Install
 
 ```bash
 git clone https://github.com/akheeltester/Demogorgon.git
 cd Demogorgon
-bash setup.sh
-```
-
-### 2. Configure API Key (free)
-
-```bash
-# Get free key at: https://openrouter.ai/keys
-cp .env.example .env
-# Edit .env and paste your key:
-# OPENROUTER_API_KEY=sk-or-v1-your-key-here
-```
-
-### 3. Hunt
-
-```bash
+python -m venv venv
 source venv/bin/activate
-
-# Basic hunt
-python -m demogorgon https://target.com
-
-# Autonomous V3 mode (parallel experiments)
-python -m demogorgon https://target.com --v3
-
-# Through Burp Suite proxy
-python -m demogorgon https://target.com --proxy http://127.0.0.1:8080
-
-# Custom iterations
-python -m demogorgon https://target.com --max-iterations 100
+pip install -e .
 ```
 
-### 4. Test with Juice Shop (safe target)
+### 2. Configure LLM Provider
+
+```bash
+cp .env.example .env
+# Edit .env with your API key
+```
+
+**Supported providers:**
+
+| Provider | Model Example | Base URL |
+|----------|--------------|----------|
+| OpenAI | `gpt-4o-mini` | `https://api.openai.com/v1` |
+| OpenRouter | `nvidia/llama-3.1-nemotron-70b-instruct:free` | `https://openrouter.ai/api/v1` |
+| Anthropic | `claude-sonnet-4-20250514` | (auto) |
+| DeepSeek | `deepseek-chat` | `https://api.deepseek.com/v1` |
+| Ollama | `llama3.1` | `http://localhost:11434/v1` |
+
+```env
+# .env
+DEMOGORGON_LLM_PROVIDER=openai
+DEMOGORGON_API_KEY=sk-your-key-here
+DEMOGORGON_MODEL=gpt-4o-mini
+```
+
+### 3. Diagnose
+
+```bash
+python -m demogorgon doctor
+```
+
+Checks: Python version, installed tools, LLM connectivity, latency, structured output.
+
+### 4. Hunt
+
+```bash
+# Interactive menu
+python -m demogorgon
+
+# Quick scan against a target
+python -m demogorgon https://example.com
+
+# Paste a HackerOne/Bugcrowd program policy
+python -m demogorgon --program
+
+# Resume a previous engagement
+python -m demogorgon resume
+```
+
+### 5. Test with Juice Shop (safe, local target)
 
 ```bash
 docker run -d -p 3000:3000 bkimminich/juice-shop
@@ -98,127 +128,162 @@ python -m demogorgon http://localhost:3000
 
 ---
 
-## CLI Options
+## CLI Commands
 
 ```
-python -m demogorgon <target_url> [options]
+python -m demogorgon [target] [command]
 
-  --headless          Run browser headless (default)
-  --no-headless       Show browser window
-  --proxy URL         Route through Burp/ZAP
-  --rate-limit SECS  Delay between requests (default: 1.0)
-  --max-iterations N  Max reasoning loops (default: 50)
-  --output DIR        Output directory (default: hunt_output)
-  --v3                Use V3 autonomous researcher
-  --benchmark         Run benchmark mode
+Commands:
+  (no args)          Interactive menu
+  <target_url>       Start research against a target
+  --program          Paste a program policy (HackerOne, Bugcrowd, etc.)
+  resume             Resume a paused/stopped engagement
+  status             Show engagement status
+  findings           List confirmed findings
+  report             Generate JSON + Markdown report
+  setup              Configuration wizard
+  doctor             Diagnose environment + LLM connectivity
 ```
 
 ---
 
-## Modules
+## Program Policy Format
+
+Demogorgon accepts scope from any bug bounty platform. Paste the raw policy text and it auto-detects the platform:
+
+```
+Platform: HackerOne
+Program: example-program
+Scope:
+  *.example.com - Web Application
+  api.example.com - API
+Exclusions:
+  admin.example.com
+  staging.example.com
+```
+
+**Auto-detected platforms:** HackerOne, Bugcrowd, Intigriti, Immunefi, GitHub, custom/manual.
+
+---
+
+## Module Structure
 
 ```
 demogorgon/
+├── core/
+│   ├── engagement/          Engagement + ProgramPolicy + ScopeAsset
+│   ├── scope/               ScopeParser + ScopeMatcher + SafetyGate
+│   ├── auth/                Session management + auth strategies
+│   ├── hitl/                Human-in-the-loop gate + pause controller
+│   ├── brain/               LLMReasoner + Planner + Validator + ResearchBrain
+│   ├── research_loop/       ResearchLoop + PlanExecutor + EvidenceCollector
+│   ├── evidence/            EvidencePackager + types
+│   ├── validation/          ValidationPipeline (FP/TP detection)
+│   ├── chains/              BugChainDetector (8 known patterns)
+│   ├── state/               StateManager (crash resume)
+│   ├── reporting/           ReportGenerator (JSON + Markdown)
+│   ├── gateway.py           ActionGateway (scope + safety + HITL)
+│   ├── runner.py            AutonomousRunner (end-to-end orchestrator)
+│   ├── context_builder.py   ResearchContextBuilder (bounded LLM context)
+│   ├── decision.py          ResearchDecision (Pydantic schema)
+│   └── interfaces.py        Core ABCs + ActionType enum
 │
-├── main.py                 ← Entry point & CLI
-├── researcher.py           ← Core 8-stage hunt orchestrator
-├── researcher_v3.py        ← V3 autonomous controller
-├── memory.py               ← Working memory
-├── app_model.py            ← Application understanding
-├── llm_client.py           ← OpenRouter LLM client
-├── detectors.py            ← Deterministic vuln detectors
+├── llm/
+│   ├── manager.py           LLMManager (retry, fallback, health check)
+│   ├── base.py              LLMProvider ABC + LLMResponse
+│   └── providers/           openai.py, anthropic.py
+│
+├── recon/
+│   └── engine.py            ReconEngine (8 stages)
 │
 ├── tools/
-│   ├── browser.py          ← Playwright automation
-│   ├── http_client.py      ← Async HTTP client
-│   ├── replay.py           ← HTTP replay (11 mutation modes)
-│   └── ...
+│   ├── registry.py          ToolRegistry
+│   ├── executor.py          ToolExecutor
+│   └── adapters/            subfinder, httpx, katana, ffuf, nuclei, etc.
 │
-├── auth/authcore/          ← Auth testing library
-│   ├── session.py          ← Sessions, cookies, JWT
-│   ├── idor_tester.py      ← Cross-user IDOR
-│   ├── role_tester.py      ← Privilege escalation
-│   └── ...
+├── cli/
+│   └── __init__.py          CLI entry point (argparse)
 │
-├── executors/              ← Vulnerability executors
-│   ├── cors_detector.py
-│   ├── ssti_detector.py
-│   ├── xss_detector.py
-│   ├── ssrf_tester.py
-│   └── ...
-│
-├── controller/             ← V3 executive controller
-├── are/                    ← Attack research engine
-└── benchmark/              ← Benchmark runner
+├── main.py                  Legacy entry point
+├── researcher.py            Legacy researcher
+└── app_model.py             ApplicationModel
 ```
 
 ---
 
-## What Demogorgon Detects
+## What Demogorgon Tests
 
-| Module | Vulnerability Class |
+| Vulnerability Class | Detection Method |
 |---|---|
-| `cors_detector` | CORS misconfiguration |
-| `xss_detector` | Cross-Site Scripting |
-| `ssti_detector` | Server-Side Template Injection |
-| `ssrf_tester` | Server-Side Request Forgery |
-| `xxe_detector` | XML External Entity |
-| `idor_tester` | Insecure Direct Object Reference |
-| `auth_bypass_tester` | Authentication Bypass |
-| `csrf_tester` | Cross-Site Request Forgery |
-| `info_disclosure_detector` | Information Disclosure |
-| `race_detector` | Race Conditions |
-| `jwt_attacker` | JWT Weakness |
-| `upload_tester` | File Upload Abuse |
-| `redirect_tester` | Open Redirect |
-| `logic_tester` | Business Logic Flaws |
-
----
-
-## Requirements
-
-- **Python** 3.11+
-- **OpenRouter API key** (free tier available)
-- **Playwright** (auto-installed with Chromium)
-
----
-
-## Getting Your Free API Key
-
-1. Go to **https://openrouter.ai**
-2. Sign up → Go to **https://openrouter.ai/keys**
-3. Click **Create Key** — name it `Demogorgon`
-4. Copy key (starts with `sk-or-...`)
-5. Paste in `.env`: `OPENROUTER_API_KEY=sk-or-...`
-
-**Free models:**
-| Model | Role |
-|---|---|
-| `nvidia/llama-3.1-nemotron-70b-instruct:free` | Primary |
-| `meta-llama/llama-3.2-11b-vision-instruct:free` | Fallback |
-
-Free tier: ~200 requests/day per model. Auto-rotation on limit hit.
+| IDOR | Sequential ID enumeration, cross-user access |
+| XSS | Reflected, stored, DOM-based injection |
+| SSRF | Internal URL fetch, cloud metadata |
+| SQLi | Error-based, blind, time-based |
+| CSRF | Missing tokens, cross-origin requests |
+| Auth Bypass | Session fixation, role escalation |
+| Open Redirect | Redirect chain manipulation |
+| File Upload | Unrestricted upload, path traversal |
+| Race Conditions | Concurrent request abuse |
+| CORS | Misconfigured origin reflection |
+| SSTI | Template injection payloads |
+| XXE | XML external entity injection |
+| JWT Weakness | Algorithm confusion, key leakage |
+| Business Logic | Price manipulation, workflow bypass |
+| Information Disclosure | Verbose errors, debug endpoints |
 
 ---
 
 ## Development
 
 ```bash
-# Install dev deps
-pip install -r requirements-dev.txt
+# Install dev dependencies
+pip install -e ".[dev]"
 
-# Run tests
-pytest demogorgon/auth/authcore/tests/ -v
+# Run unit tests (360+ tests)
+pytest demogorgon/core/tests/ -v
+
+# Run integration tests (standalone)
+python test_integration.py
+
+# Run Phase 10.1 tests (LLM + research loop)
+pytest demogorgon/core/tests/test_phase10_1.py -v
 
 # Lint
 ruff check demogorgon/
 ```
 
+### Test Structure
+
+| Suite | Tests | Description |
+|-------|-------|-------------|
+| `test_phase3.py` | 32 | Recon engine + asset intelligence |
+| `test_phase4.py` | 25 | Crawler + app model + attack surface |
+| `test_phase5.py` | 34 | LLM brain + reasoner + planner |
+| `test_phase6.py` | 29 | Research loop + executor + evidence |
+| `test_phase7.py` | 48 | Auth + HITL |
+| `test_phase8.py` | 26 | Evidence packaging + validation |
+| `test_phase9.py` | 20 | State persistence + reporting |
+| `test_phase10.py` | 27 | Integration (gateway, runner, CLI) |
+| `test_phase10_1.py` | 49 | LLM provider + decision schema + loop |
+| `test_integration.py` | 39 | Full pipeline E2E (standalone) |
+
 ---
 
-## Contributing
+## Safety
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+- **Scope enforcement** — Every action passes through `SafetyGate` + `ScopeMatcher` before execution
+- **Human-in-the-loop** — Configurable approval levels (NONE, AUTOMATIC, REQUIRED, CRITICAL)
+- **Rate limiting** — Built-in request throttling with configurable delay
+- **ActionGateway** — LLM proposes actions, deterministic code validates and executes
+- **Crash resume** — State persists to disk; resume from last checkpoint
+
+---
+
+## Requirements
+
+- **Python** 3.11+
+- **LLM API key** (OpenAI, OpenRouter, Anthropic, or DeepSeek)
+- **Security tools** (optional, auto-detected): subfinder, httpx, katana, ffuf, nuclei, naabu, dalfox
 
 ---
 
