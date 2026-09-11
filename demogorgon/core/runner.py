@@ -276,8 +276,16 @@ class AutonomousRunner:
                 executor=self.tool_registry,
             )
             result = await engine.run(self.engagement.target_url)
-            logger.info(f"Recon complete: {result.stats.get('assets_found', 0)} assets")
-            return {"stats": result.stats}
+            stats = {
+                "subdomains": len(result.subdomains),
+                "live_hosts": len(result.live_hosts),
+                "endpoints": len(result.endpoints),
+                "ports": len(result.ports),
+                "technologies": len(result.technologies),
+                "stages_completed": result.stages_completed,
+            }
+            logger.info(f"Recon complete: {stats['subdomains']} subdomains, {stats['live_hosts']} live hosts")
+            return {"stats": stats}
         except ImportError:
             logger.warning("ReconEngine not available — skipping recon")
             return None
@@ -301,8 +309,8 @@ class AutonomousRunner:
             from ..core.crawl.pipeline import CrawlerPipeline
             from ..app_model import ApplicationModel
 
-            pipeline = CrawlerPipeline()
-            app_model = ApplicationModel()
+            app_model = ApplicationModel(target_url=self.engagement.target_url)
+            pipeline = CrawlerPipeline(app_model=app_model)
 
             # Ingest URLs from recon if available
             # The pipeline will also discover endpoints from katana/crawler

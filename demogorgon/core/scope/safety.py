@@ -120,6 +120,7 @@ class SafetyGate:
         # Scope check on target
         scope_result = self._matcher.match(target)
         if not scope_result:
+            self._log_blocked(target, "out_of_scope", scope_result.reason)
             return SafetyCheck(
                 allowed=False,
                 reason=f"Target out of scope: {scope_result.reason}",
@@ -129,6 +130,7 @@ class SafetyGate:
         # Action-specific restriction checks
         restriction_check = self._check_restrictions(action)
         if not restriction_check:
+            self._log_blocked(target, "restriction", restriction_check.reason)
             return restriction_check
         
         return SafetyCheck(

@@ -51,6 +51,10 @@ PLATFORM_PATTERNS = {
         r"immunefi\.com",
         r"immunefi",
     ],
+    "manual": [
+        r"^manual$",
+        r"platform:\s*manual",
+    ],
 }
 
 
@@ -59,7 +63,7 @@ def detect_platform(text: str) -> str:
     text_lower = text.lower()
     for platform, patterns in PLATFORM_PATTERNS.items():
         for pattern in patterns:
-            if re.search(pattern, text_lower):
+            if re.search(pattern, text_lower, re.MULTILINE):
                 return platform
     return "custom"
 
