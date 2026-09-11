@@ -75,6 +75,15 @@ def info(msg):
     print(f"  {YELLOW}→{RESET} {msg}")
 
 
+def run_async(coro):
+    """Run an async coroutine synchronously."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 async def test_engagement_creation():
     """Test 1: Engagement creation from program policy."""
     section("1. ENGAGEMENT CREATION")
@@ -664,7 +673,7 @@ async def test_cli_smoke():
     ok("CLI --help works")
 
 
-async def main():
+def main():
     """Run all integration tests."""
     print(f"\n{BOLD}{'='*60}{RESET}")
     print(f"{BOLD}  DEMOGORGON INTEGRATION TEST SUITE{RESET}")
@@ -688,7 +697,7 @@ async def main():
 
     for name, test_fn in tests:
         try:
-            await test_fn()
+            run_async(test_fn())
         except Exception as e:
             fail(f"Test '{name}' crashed: {e}", traceback.format_exc())
 
@@ -714,5 +723,5 @@ async def main():
 
 
 if __name__ == "__main__":
-    exit_code = asyncio.run(main())
+    exit_code = main()
     sys.exit(exit_code)

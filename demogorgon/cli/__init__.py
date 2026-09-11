@@ -346,6 +346,69 @@ async def cmd_doctor():
     
     console.print(table)
 
+    # LLM diagnostics
+    console.print("\n[bold]LLM Diagnostics[/bold]\n")
+
+    from demogorgon.llm.manager import LLMManager
+
+    mgr = LLMManager()
+    mgr.configure()
+
+    llm_table = Table(show_header=True, border_style="cyan")
+    llm_table.add_column("Check")
+    llm_table.add_column("Result")
+
+    llm_table.add_row("Provider", mgr._active_provider or "NOT CONFIGURED")
+    llm_table.add_row("Model", mgr._active_model or "N/A")
+
+    api_key = mgr._env.get("DEMOGORGON_API_KEY") or mgr._env.get("LLM_API_KEY", "")
+    if api_key:
+        masked = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "SET"
+        llm_table.add_row("API Key", f"[green]{masked}[/green]")
+    else:
+        llm_table.add_row("API Key", "[red]NOT CONFIGURED[/red]")
+
+    if mgr.available:
+        health = await mgr.health_check()
+        connectivity = health.get("connectivity", "UNKNOWN")
+        status_style = "green" if connectivity == "OK" else "red"
+        llm_table.add_row("Connectivity", f"[{status_style}]{connectivity}[/{status_style}]")
+        if health.get("latency"):
+            llm_table.add_row("Latency", f"{health['latency']:.2f}s")
+    else:
+        llm_table.add_row("Connectivity", "[yellow]SKIPPED (not configured)[/yellow]")
+
+    console.print(llm_table)
+
+    # LLM smoke test (if --llm flag or always in doctor)
+    if "--llm" in sys.argv or True:  # Always run in doctor
+        console.print("\n[bold]LLM Smoke Test[/bold]\n")
+        if mgr.available:
+            smoke = await mgr.smoke_test()
+            smoke_table = Table(show_header=False, border_style="cyan")
+            smoke_table.add_column("Key", style="bold")
+            smoke_table.add_column("Value")
+            smoke_table.add_row("Provider", smoke.get("provider", "unknown"))
+            smoke_table.add_row("Model", smoke.get("model", "unknown"))
+            smoke_table.add_row("Latency", f"{smoke.get('latency', 0):.2f}s")
+
+            status = smoke.get("status", "unknown")
+            s_style = "green" if status == "ok" else "red"
+            smoke_table.add_row("Status", f"[{s_style}]{status.upper()}[/{s_style}]")
+
+            structured = smoke.get("structured_output", "N/A")
+            st_style = "green" if structured == "OK" else "red"
+            smoke_table.add_row("Structured Output", f"[{st_style}]{structured}[/{st_style}]")
+
+            if smoke.get("error"):
+                smoke_table.add_row("Error", f"[red]{smoke['error'][:100]}[/red]")
+            if smoke.get("missing_fields"):
+                smoke_table.add_row("Missing Fields", str(smoke["missing_fields"]))
+
+            console.print(smoke_table)
+        else:
+            console.print("[yellow]Skipped (no LLM provider configured)[/yellow]")
+
 
 async def cmd_findings():
     """Show findings from the most recent engagement."""

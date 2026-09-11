@@ -108,7 +108,7 @@ class LLMReasoner(Reasoner):
             "test_endpoint": ActionType.TEST_ENDPOINT,
             "test_idor": ActionType.TEST_IDOR,
             "test_xss": ActionType.TEST_XSS,
-            "test_sqli": ActionType.TEST_Sqli,
+            "test_sqli": ActionType.TEST_SQLI,
             "test_ssrf": ActionType.TEST_SSRF,
             "test_csrf": ActionType.TEST_CSRF,
             "test_redirect": ActionType.TEST_REDIRECT,
@@ -133,7 +133,12 @@ class LLMReasoner(Reasoner):
 
         try:
             response = await self._llm(messages, response_format={"type": "json_object"})
-            content = response.get("content", "{}") if isinstance(response, dict) else str(response)
+            if hasattr(response, "content"):
+                content = response.content or "{}"
+            elif isinstance(response, dict):
+                content = response.get("content", "{}")
+            else:
+                content = str(response)
             decision_data = json.loads(content)
             return self._parse_decision(decision_data)
         except (json.JSONDecodeError, KeyError, TypeError, Exception) as e:
@@ -163,7 +168,12 @@ Provide a concise explanation of the security rationale."""
 
         try:
             response = await self._llm(messages)
-            return response.get("content", decision.reason) if isinstance(response, dict) else str(response)
+            if hasattr(response, "content"):
+                return response.content or decision.reason
+            elif isinstance(response, dict):
+                return response.get("content", decision.reason)
+            else:
+                return str(response)
         except Exception:
             return decision.reason
 

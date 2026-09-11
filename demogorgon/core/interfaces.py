@@ -22,27 +22,8 @@ from datetime import datetime, timezone
 
 # ─── Decision Types ───────────────────────────────────────────────
 
-class ActionType(Enum):
-    """Types of actions the research brain can propose."""
-    RECON = "recon"
-    CRAWL = "crawl"
-    FUZZ = "fuzz"
-    TEST_ENDPOINT = "test_endpoint"
-    ANALYZE_JS = "analyze_js"
-    ANALYZE_API = "analyze_api"
-    TEST_AUTH = "test_auth"
-    TEST_IDOR = "test_idor"
-    TEST_XSS = "test_xss"
-    TEST_Sqli = "test_sqli"
-    TEST_SSRF = "test_ssrf"
-    TEST_CSRF = "test_csrf"
-    TEST_REDIRECT = "test_redirect"
-    TEST_UPLOAD = "test_upload"
-    INVESTIGATE = "investigate"
-    OBSERVE = "observe"
-    WAIT = "wait"
-    STOP = "stop"
-    CUSTOM = "custom"
+# Re-export ActionType from decision.py (single source of truth)
+from .decision import ActionType  # noqa: F401, E402
 
 
 class Confidence(Enum):

@@ -95,7 +95,12 @@ class LLMValidator(Validator):
 
         try:
             response = await self._llm(messages, response_format={"type": "json_object"})
-            content = response.get("content", "{}") if isinstance(response, dict) else str(response)
+            if hasattr(response, "content"):
+                content = response.content or "{}"
+            elif isinstance(response, dict):
+                content = response.get("content", "{}")
+            else:
+                content = str(response)
             result = json.loads(content)
             return self._normalize_result(result, evidence)
         except (json.JSONDecodeError, KeyError, TypeError, Exception) as e:

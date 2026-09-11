@@ -72,6 +72,38 @@ class EvidenceCollector:
         self._evidence: list[EvidenceItem] = []
         self._by_type: dict[str, list[EvidenceItem]] = {}
         self._by_endpoint: dict[str, list[EvidenceItem]] = {}
+        self._persist = bool(workspace_dir)
+        self._evidence_file = self._workspace / "evidence.json"
+        if self._persist:
+            self._load_existing()
+
+    def _load_existing(self) -> None:
+        """Load existing evidence from disk."""
+        if self._evidence_file.exists():
+            try:
+                with open(self._evidence_file) as f:
+                    data = json.load(f)
+                # Support both formats: {"evidence": [...]} and plain [...]
+                items = data.get("evidence", data) if isinstance(data, dict) else data
+                if isinstance(items, list):
+                    for item_dict in items:
+                        if isinstance(item_dict, dict):
+                            item = EvidenceItem.from_dict(item_dict)
+                            self._evidence.append(item)
+                            self._by_type.setdefault(item.type, []).append(item)
+                            url = item.request.get("url", "")
+                            if url:
+                                self._by_endpoint.setdefault(url, []).append(item)
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+    def _save(self) -> None:
+        """Persist evidence to disk."""
+        if not self._persist:
+            return
+        self._workspace.mkdir(parents=True, exist_ok=True)
+        with open(self._evidence_file, "w") as f:
+            json.dump([item.to_dict() for item in self._evidence], f, indent=2)
 
     def add_evidence(
         self,
@@ -100,6 +132,7 @@ class EvidenceCollector:
         if url:
             self._by_endpoint.setdefault(url, []).append(item)
 
+        self._save()
         return item
 
     def add_http_evidence(
@@ -220,10 +253,15 @@ class EvidenceCollector:
             json.dump(data, f, indent=2)
 
     def load(self, path: str) -> bool:
-        """Load evidence from a JSON file."""
+        """Load evidence from a JSON file, replacing any existing evidence."""
         try:
             with open(path) as f:
                 data = json.load(f)
+
+            # Clear existing evidence
+            self._evidence.clear()
+            self._by_type.clear()
+            self._by_endpoint.clear()
 
             for item_data in data.get("evidence", []):
                 item = EvidenceItem.from_dict(item_data)
