@@ -1,0 +1,25 @@
+{
+  "target": "https://httpbin.org",
+  "program": "",
+  "generated_at": 1789132693.2400944,
+  "total_findings": 0,
+  "severity_counts": {},
+  "findings": [],
+  "stats": {
+    "iteration": 2,
+    "observations": 2,
+    "hypotheses": 1,
+    "active_hypotheses": 1,
+    "experiments": 1,
+    "findings": 0,
+    "confirmed_findings": 0,
+    "tested_actions": 0,
+    "tested_endpoints": 0,
+    "consecutive_failures": 0,
+    "status": "active",
+    "vuln_class_coverage": {}
+  },
+  "metadata": {
+    "chains": []
+  }
+}

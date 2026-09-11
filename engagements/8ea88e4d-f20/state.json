@@ -1,0 +1,18 @@
+{
+  "engagement_id": "8ea88e4d-f20",
+  "target": "https://httpbin.org",
+  "started_at": 1789132600.4647868,
+  "last_updated": 1789132693.2406156,
+  "status": "completed",
+  "iteration": 0,
+  "strategy": "explore",
+  "findings_count": 0,
+  "evidence_count": 0,
+  "hypotheses_count": 0,
+  "observations_count": 0,
+  "data": {
+    "tools_discovered": 0,
+    "recon_complete": true,
+    "crawl_complete": true
+  }
+}

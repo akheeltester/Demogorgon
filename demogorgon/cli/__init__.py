@@ -43,6 +43,7 @@ async def _run_engagement(engagement, resume: bool = False):
     """Run or resume an autonomous engagement."""
     from demogorgon.core.runner import AutonomousRunner, RunnerConfig
     from demogorgon.llm.manager import LLMManager
+    from demogorgon.core.hitl.gate import ApprovalLevel
 
     # Get LLM provider
     llm_manager = LLMManager()
@@ -50,7 +51,7 @@ async def _run_engagement(engagement, resume: bool = False):
 
     if not llm_generate:
         console.print("[red]No LLM provider configured.[/red]")
-        console.print("Set LLM_PROVIDER, LLM_MODEL, and LLM_API_KEY in .env")
+        console.print("Set DEMOGORGON_LLM_PROVIDER and DEMOGORGON_API_KEY in .env")
         console.print("Running in observation-only mode (no LLM reasoning).")
 
     runner = AutonomousRunner(
@@ -58,12 +59,13 @@ async def _run_engagement(engagement, resume: bool = False):
         config=RunnerConfig(
             max_iterations=50,
             checkpoint_interval=5,
+            approval_level=ApprovalLevel.NONE,
         ),
         llm_generate=llm_generate,
     )
 
     console.print(f"\n[cyan]{'Resuming' if resume else 'Starting'} autonomous research...[/cyan]")
-    console.print(f"Target: {engagement.target}")
+    console.print(f"Target: {engagement.target_url}")
     console.print(f"Workspace: {runner.workspace_dir}\n")
 
     try:
@@ -187,7 +189,7 @@ async def cmd_program():
         console.print("\n[bold yellow]Authorization Required[/bold yellow]")
         console.print("Please confirm that you are authorized to test this target.")
         if Confirm.ask("[bold]Are you authorized to test this target?[/bold]", default=False):
-            from demogorgon.core.engagement.models import AuthorizationStatus, EngagementStatus
+            from demogorgon.core.engagement import AuthorizationStatus, EngagementStatus
             engagement.authorization_status = AuthorizationStatus.CONFIRMED
             engagement.status = EngagementStatus.ACTIVE
             engagement.save(str(Path(engagement.workspace_dir) / "engagement.json"))
@@ -216,7 +218,7 @@ async def cmd_target(url: str):
         return
     
     from demogorgon.core.engagement.manager import EngagementManager
-    from demogorgon.core.engagement.models import AuthorizationStatus, EngagementStatus
+    from demogorgon.core.engagement import AuthorizationStatus, EngagementStatus
     
     manager = EngagementManager()
     engagement = manager.create_from_url(url)
