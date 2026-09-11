@@ -39,6 +39,59 @@ def print_banner():
     console.print(BANNER, style="bold cyan")
 
 
+async def _run_engagement(engagement, resume: bool = False):
+    """Run or resume an autonomous engagement."""
+    from demogorgon.core.runner import AutonomousRunner, RunnerConfig
+    from demogorgon.llm.manager import LLMManager
+
+    # Get LLM provider
+    llm_manager = LLMManager()
+    llm_generate = llm_manager.generate if llm_manager.available else None
+
+    if not llm_generate:
+        console.print("[red]No LLM provider configured.[/red]")
+        console.print("Set LLM_PROVIDER, LLM_MODEL, and LLM_API_KEY in .env")
+        console.print("Running in observation-only mode (no LLM reasoning).")
+
+    runner = AutonomousRunner(
+        engagement=engagement,
+        config=RunnerConfig(
+            max_iterations=50,
+            checkpoint_interval=5,
+        ),
+        llm_generate=llm_generate,
+    )
+
+    console.print(f"\n[cyan]{'Resuming' if resume else 'Starting'} autonomous research...[/cyan]")
+    console.print(f"Target: {engagement.target}")
+    console.print(f"Workspace: {runner.workspace_dir}\n")
+
+    try:
+        if resume:
+            result = await runner.resume()
+        else:
+            result = await runner.run()
+
+        # Display results
+        if result.get("error"):
+            console.print(f"\n[red]Engagement error: {result['error']}[/red]")
+        else:
+            console.print(f"\n[bold green]Engagement Complete[/bold green]")
+            console.print(f"  Findings: {result.get('findings_count', 0)}")
+            console.print(f"  Chains: {result.get('chains_count', 0)}")
+            console.print(f"  Duration: {result.get('duration', 0):.1f}s")
+
+            if result.get("report_path"):
+                console.print(f"  Report: {result['report_path']}")
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Engagement interrupted by user.[/yellow]")
+        console.print("State saved. Resume with: demogorgon resume")
+    except Exception as e:
+        console.print(f"\n[red]Engagement failed: {e}[/red]")
+        console.print("State saved. Resume with: demogorgon resume")
+
+
 async def cmd_interactive():
     """Interactive menu."""
     print_banner()
@@ -139,6 +192,9 @@ async def cmd_program():
             engagement.status = EngagementStatus.ACTIVE
             engagement.save(str(Path(engagement.workspace_dir) / "engagement.json"))
             console.print("[green]Authorization confirmed. Engagement active.[/green]")
+
+            # Start the autonomous research loop
+            await _run_engagement(engagement)
         else:
             console.print("[red]Authorization not confirmed. Engagement paused.[/red]")
 
@@ -171,9 +227,8 @@ async def cmd_target(url: str):
     console.print(f"\n[green]Engagement created and authorized: {engagement.id}[/green]")
     console.print(f"Workspace: {engagement.workspace_dir}")
     
-    # TODO: Start the autonomous research loop
-    console.print("\n[cyan]Starting autonomous research...[/cyan]")
-    console.print("[yellow]Phase 1 complete. Research loop not yet implemented.[/yellow]")
+    # Start the autonomous research loop
+    await _run_engagement(engagement)
 
 
 async def cmd_resume():
@@ -215,8 +270,13 @@ async def cmd_resume():
         if 0 <= idx < len(engagements):
             eng_id = engagements[idx]["id"]
             console.print(f"\n[cyan]Resuming engagement: {eng_id}[/cyan]")
-            # TODO: Resume the engagement
-            console.print("[yellow]Resume not yet implemented.[/yellow]")
+
+            # Load the engagement
+            engagement = manager.load(eng_id)
+            if engagement:
+                await _run_engagement(engagement, resume=True)
+            else:
+                console.print(f"[red]Could not load engagement: {eng_id}[/red]")
     except (ValueError, IndexError):
         console.print("[red]Invalid selection.[/red]")
 
@@ -288,27 +348,169 @@ async def cmd_doctor():
 
 
 async def cmd_findings():
-    """Show findings."""
+    """Show findings from the most recent engagement."""
     print_banner()
-    console.print("\n[bold]Findings[/bold]\n")
-    # TODO: Implement
-    console.print("[yellow]Not yet implemented.[/yellow]")
+
+    from demogorgon.core.engagement.manager import EngagementManager
+    from demogorgon.core.state.manager import StateManager
+
+    manager = EngagementManager()
+    engagements = manager.list_engagements()
+
+    if not engagements:
+        console.print("[yellow]No engagements found.[/yellow]")
+        return
+
+    # Use most recent engagement
+    eng = engagements[-1]
+    workspace = eng.get("workspace_dir", "")
+
+    if not workspace:
+        console.print("[yellow]No workspace found for engagement.[/yellow]")
+        return
+
+    state_manager = StateManager(workspace)
+    state = state_manager.load_state()
+    case_data = state_manager.load_case()
+
+    if not case_data:
+        console.print("[yellow]No research data found.[/yellow]")
+        return
+
+    findings = case_data.get("findings", [])
+    if not findings:
+        console.print("[yellow]No findings yet.[/yellow]")
+        return
+
+    console.print(f"\n[bold]Findings for {eng.get('name', eng['id'])}[/bold]\n")
+
+    table = Table(show_header=True, border_style="cyan")
+    table.add_column("#", style="dim")
+    table.add_column("Title", style="bold")
+    table.add_column("Severity")
+    table.add_column("Endpoint")
+    table.add_column("Confirmed")
+
+    for i, f in enumerate(findings, 1):
+        severity = f.get("severity", "unknown")
+        sev_style = {"critical": "bold red", "high": "red", "medium": "yellow", "low": "cyan"}.get(severity, "")
+        confirmed = "Yes" if f.get("confirmed") else "No"
+        table.add_row(
+            str(i),
+            f.get("title", "Untitled"),
+            f"[{sev_style}]{severity}[/{sev_style}]" if sev_style else severity,
+            f.get("endpoint", ""),
+            confirmed,
+        )
+
+    console.print(table)
 
 
 async def cmd_report():
-    """Generate report."""
+    """Generate report from the most recent engagement."""
     print_banner()
-    console.print("\n[bold]Report Generation[/bold]\n")
-    # TODO: Implement
-    console.print("[yellow]Not yet implemented.[/yellow]")
+
+    from demogorgon.core.engagement.manager import EngagementManager
+    from demogorgon.core.state.manager import StateManager
+    from demogorgon.core.reporting.generator import ReportGenerator, Finding
+
+    manager = EngagementManager()
+    engagements = manager.list_engagements()
+
+    if not engagements:
+        console.print("[yellow]No engagements found.[/yellow]")
+        return
+
+    eng = engagements[-1]
+    workspace = eng.get("workspace_dir", "")
+
+    if not workspace:
+        console.print("[yellow]No workspace found.[/yellow]")
+        return
+
+    state_manager = StateManager(workspace)
+    case_data = state_manager.load_case()
+
+    if not case_data:
+        console.print("[yellow]No research data to report on.[/yellow]")
+        return
+
+    findings_data = case_data.get("findings", [])
+    findings = []
+    for f in findings_data:
+        findings.append(Finding(
+            title=f.get("title", "Untitled"),
+            severity=f.get("severity", "unknown"),
+            vuln_class=f.get("vuln_class", ""),
+            endpoint=f.get("endpoint", ""),
+            description=f.get("description", ""),
+            impact=f.get("impact", ""),
+            remediation=f.get("remediation", ""),
+            reproduction_steps=f.get("steps_to_reproduce", []),
+        ))
+
+    gen = ReportGenerator(workspace_dir=workspace)
+    report = gen.generate(
+        findings=findings,
+        target=eng.get("target", ""),
+        program=eng.get("name", ""),
+    )
+
+    json_path = gen.save_json(report)
+    md_path = gen.save_markdown(report)
+
+    console.print(f"\n[green]Report generated:[/green]")
+    console.print(f"  JSON: {json_path}")
+    console.print(f"  Markdown: {md_path}")
+    console.print(f"\n  {len(findings)} finding(s) across {len(set(f.get('severity', '') for f in findings_data))} severity levels")
 
 
 async def cmd_status():
-    """Show status."""
+    """Show status of the most recent engagement."""
     print_banner()
-    console.print("\n[bold]Status[/bold]\n")
-    # TODO: Implement
-    console.print("[yellow]Not yet implemented.[/yellow]")
+
+    from demogorgon.core.engagement.manager import EngagementManager
+    from demogorgon.core.state.manager import StateManager
+
+    manager = EngagementManager()
+    engagements = manager.list_engagements()
+
+    if not engagements:
+        console.print("[yellow]No engagements found.[/yellow]")
+        return
+
+    eng = engagements[-1]
+    workspace = eng.get("workspace_dir", "")
+
+    if not workspace:
+        console.print("[yellow]No workspace found.[/yellow]")
+        return
+
+    state_manager = StateManager(workspace)
+    summary = state_manager.get_summary()
+
+    console.print(f"\n[bold]Engagement Status[/bold]\n")
+
+    table = Table(show_header=False, border_style="cyan")
+    table.add_column("Key", style="bold")
+    table.add_column("Value")
+
+    table.add_row("Engagement", eng.get("id", "unknown"))
+    table.add_row("Target", eng.get("target", "unknown"))
+    table.add_row("Status", eng.get("status", "unknown"))
+    table.add_row("Workspace", workspace)
+
+    if summary.get("has_state"):
+        state = summary.get("state", {})
+        if state:
+            table.add_row("Iteration", str(state.get("iteration", 0)))
+            table.add_row("Strategy", state.get("strategy", "unknown"))
+            table.add_row("Findings", str(state.get("findings_count", 0)))
+
+    table.add_row("Checkpoints", str(summary.get("checkpoint_count", 0)))
+    table.add_row("Has Case Data", "Yes" if summary.get("has_case") else "No")
+
+    console.print(table)
 
 
 async def main():

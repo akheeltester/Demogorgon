@@ -73,6 +73,8 @@ class ResearchLoop:
         config: LoopConfig | None = None,
         workspace_dir: str = "",
         engagement_id: str = "",
+        state_manager: Any = None,
+        validation_pipeline: Any = None,
     ):
         self.target = target
         self.config = config or LoopConfig()
@@ -100,6 +102,12 @@ class ResearchLoop:
 
         # Initialize evidence collector
         self.evidence = EvidenceCollector(workspace_dir=workspace_dir)
+
+        # Optional: StateManager for persistence
+        self._state_manager = state_manager
+
+        # Optional: ValidationPipeline for deterministic validation
+        self._validation = validation_pipeline
 
         # State
         self._iteration = 0
@@ -258,7 +266,11 @@ class ResearchLoop:
         hypothesis: Any,
         result: dict[str, Any],
     ) -> dict[str, Any]:
-        """Validate evidence from an experiment."""
+        """Validate evidence from an experiment.
+
+        If a ValidationPipeline is available, run deterministic validation first.
+        If that passes (or no pipeline), run LLM-based validation.
+        """
         # Package evidence for validation
         evidence_package = self.evidence.package_for_validation(
             vuln_class=decision.action.value.replace("test_", ""),
@@ -269,7 +281,21 @@ class ResearchLoop:
         # Add hypothesis reference
         evidence_package["hypothesis_id"] = hypothesis.id
 
-        # Validate
+        # Run deterministic validation first (if available)
+        if self._validation:
+            try:
+                det_result = await self._validation.validate(
+                    evidence_package,
+                    confidence=hypothesis.confidence if hasattr(hypothesis, 'confidence') else 0.5,
+                )
+                if det_result.get("is_false_positive"):
+                    logger.debug(f"Deterministic FP detection: {det_result.get('fp_reasons')}")
+                    return det_result
+                # If deterministic validation says it's valid, still run LLM validation
+            except Exception as e:
+                logger.debug(f"Deterministic validation failed: {e}")
+
+        # LLM-based validation
         validation_result = await self.brain.validate_finding(evidence_package)
         return validation_result
 
@@ -304,6 +330,23 @@ class ResearchLoop:
 
     def _save_checkpoint(self) -> None:
         """Save a checkpoint of the current state."""
+        # Use StateManager if available (structured persistence)
+        if self._state_manager:
+            try:
+                self._state_manager.save_checkpoint(
+                    iteration=self._iteration,
+                    data={
+                        "case": self.brain.case.to_dict(),
+                        "strategy": self._strategy,
+                        "stats": self.brain.get_stats(),
+                    },
+                )
+                logger.debug(f"Checkpoint saved via StateManager at iteration {self._iteration}")
+                return
+            except Exception as e:
+                logger.warning(f"StateManager checkpoint failed: {e}")
+
+        # Fallback: direct file save
         if self.workspace_dir:
             path = f"{self.workspace_dir}/checkpoint.json"
             self.brain.save_case(path)

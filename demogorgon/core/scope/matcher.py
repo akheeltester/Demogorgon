@@ -89,6 +89,8 @@ class ScopeMatcher:
         elif asset.asset_type == "subdomain":
             return self._matches_wildcard(target, pattern)
         elif asset.asset_type == "domain":
+            if '*' in pattern:
+                return self._matches_wildcard(target, pattern)
             return self._matches_domain(target, pattern)
         elif asset.asset_type == "mobile_app":
             return target == pattern

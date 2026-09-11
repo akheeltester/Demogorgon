@@ -78,8 +78,14 @@ class ResearchBrain:
         self._iteration = 0
         self._max_iterations = 100
         self._tested_actions: set[str] = set()
+        self._tested_endpoints: set[str] = set()
+        self._tested_vuln_classes: dict[str, int] = {}
         self._consecutive_failures = 0
         self._max_consecutive_failures = 10
+
+        # Dedup limits
+        self._max_same_vuln_class = 3
+        self._max_same_endpoint = 5
 
     async def initialize(self) -> None:
         """Initialize the brain with initial observations."""
@@ -152,6 +158,10 @@ class ResearchBrain:
         # Record that we tested this action
         action_key = f"{action}:{target}"
         self._tested_actions.add(action_key)
+        self._tested_endpoints.add(target)
+        if action.startswith("test_"):
+            vuln_class = action.replace("test_", "")
+            self._tested_vuln_classes[vuln_class] = self._tested_vuln_classes.get(vuln_class, 0) + 1
 
         # Execute would happen here — for now we return the experiment
         # The actual execution is handled by the tool executor
@@ -229,8 +239,44 @@ class ResearchBrain:
             "findings": len(self.case.findings),
             "confirmed_findings": len(self.case.get_confirmed_findings()),
             "tested_actions": len(self._tested_actions),
+            "tested_endpoints": len(self._tested_endpoints),
             "consecutive_failures": self._consecutive_failures,
             "status": self.case.status.value,
+            "vuln_class_coverage": dict(self._tested_vuln_classes),
+        }
+
+    def is_action_tested(self, action: str, target: str) -> bool:
+        """Check if an action+target was already tested."""
+        return f"{action}:{target}" in self._tested_actions
+
+    def is_overtested(self, vuln_class: str, endpoint: str) -> bool:
+        """Check if a vuln class or endpoint has been over-tested."""
+        if self._tested_vuln_classes.get(vuln_class, 0) >= self._max_same_vuln_class:
+            return True
+        # Count tests per endpoint
+        endpoint_count = sum(
+            1 for a in self._tested_actions
+            if a.endswith(f":{endpoint}")
+        )
+        return endpoint_count >= self._max_same_endpoint
+
+    def get_untested_vuln_classes(self) -> list[str]:
+        """Get vuln classes that haven't been tested yet."""
+        all_classes = [
+            "idor", "xss", "sqli", "ssrf", "csrf", "auth_bypass",
+            "open_redirect", "info_disclosure", "file_upload", "ssti",
+            "xxe", "race_condition", "mass_assignment", "business_logic",
+        ]
+        return [vc for vc in all_classes if vc not in self._tested_vuln_classes]
+
+    def get_coverage_report(self) -> dict[str, Any]:
+        """Get a coverage report."""
+        return {
+            "total_tested": len(self._tested_actions),
+            "unique_endpoints": len(self._tested_endpoints),
+            "vuln_classes_tested": len(self._tested_vuln_classes),
+            "vuln_classes_untested": len(self.get_untested_vuln_classes()),
+            "coverage_by_class": dict(self._tested_vuln_classes),
         }
 
     def get_case_summary(self) -> str:
