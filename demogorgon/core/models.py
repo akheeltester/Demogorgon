@@ -3,6 +3,20 @@
 Every module that needs Finding, Hypothesis, Endpoint, BusinessObject, etc.
 imports from this file. Backward-compatible aliases are provided in
 memory.py and app_model.py for existing consumers.
+
+CONSOLIDATION NOTE (Phase 0):
+    This file contains the canonical definitions. The following modules
+    contain DUPLICATE definitions that should be consolidated to import
+    from here in future phases:
+    
+    - are/research_memory.py: Hypothesis, HypothesisStatus, AttackFamily
+    - are/exploit_confidence.py: FindingScore
+    - are/trust_boundary.py: TrustLevel, TrustBoundary
+    - are/attack_graph.py: NodeType, EdgeType
+    - controller/executive.py: Hypothesis (simpler version)
+    
+    For now, these modules maintain their own copies for backward
+    compatibility. Phase 1 will consolidate them.
 """
 
 from __future__ import annotations
@@ -77,6 +91,63 @@ class ObjectState(str, Enum):
     REJECTED = "rejected"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
+
+
+class TrustLevel(str, Enum):
+    """Trust levels for authorization testing."""
+    ANONYMOUS = "anonymous"
+    GUEST = "guest"
+    USER = "user"
+    EMPLOYEE = "employee"
+    MODERATOR = "moderator"
+    MANAGER = "manager"
+    ADMIN = "admin"
+    SUPERADMIN = "superadmin"
+    INTERNAL = "internal"
+    SYSTEM = "system"
+
+
+class NodeType(str, Enum):
+    """Node types for the attack surface graph."""
+    ENTITY = "entity"
+    ENDPOINT = "endpoint"
+    WORKFLOW = "workflow"
+    TRUST_BOUNDARY = "trust_boundary"
+    EXTERNAL = "external"
+    DOMAIN = "domain"
+    SUBDOMAIN = "subdomain"
+    IP = "ip"
+    PORT = "port"
+    SERVICE = "service"
+    API = "api"
+    APPLICATION = "application"
+    USER = "user"
+    ROLE = "role"
+    TECHNOLOGY = "technology"
+
+
+class EdgeType(str, Enum):
+    """Edge types for the attack surface graph."""
+    CREATES = "creates"
+    READS = "reads"
+    UPDATES = "updates"
+    DELETES = "deletes"
+    AUTHORIZES = "authorizes"
+    DEPENDS_ON = "depends_on"
+    FLOWS_TO = "flows_to"
+    CONTROLS = "controls"
+    OWNS = "owns"
+    RESOLVES_TO = "resolves_to"
+    HOSTS = "hosts"
+    EXPOSES = "exposes"
+    REFERENCES = "references"
+    CALLS = "calls"
+    AUTHENTICATES_TO = "authenticates_to"
+    REDIRECTS_TO = "redirects_to"
+    BELONGS_TO = "belongs_to"
+    DISCOVERED_FROM = "discovered_from"
+    VULNERABLE_TO = "vulnerable_to"
+    RELATED_TO = "related_to"
 
 
 # ── Core Data Models ────────────────────────────────────────────

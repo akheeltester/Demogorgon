@@ -159,7 +159,7 @@ class ResearchLoop:
         self._finding_scores: list[dict[str, Any]] = []
 
         # Canonical scope validator
-        from demogorgon.core.scope import ScopeValidator
+        from demogorgon.core.scope_legacy import ScopeValidator
         self._scope_validator = ScopeValidator(target_url)
 
         # Checkpoint for crash recovery

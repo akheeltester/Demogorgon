@@ -1,0 +1,50 @@
+{
+  "timestamp": "2026-07-29T12:10:53.511860",
+  "disclaimer": "VK bug bounty EXCLUDES DoS/flooding. This is for educational purposes.",
+  "summary": {
+    "total_tests": 3,
+    "total_requests": 38,
+    "total_successful": 36,
+    "any_rate_limited": false
+  },
+  "results": [
+    {
+      "test_name": "Sequential Requests (No Delay)",
+      "total_requests": 20,
+      "successful_requests": 18,
+      "rate_limited": false,
+      "avg_response_time": 5.929276943206787,
+      "max_response_time": 15.025272369384766,
+      "min_response_time": 1.7535464763641357,
+      "evidence": "18/20 requests succeeded without rate limit",
+      "severity": "MEDIUM"
+    },
+    {
+      "test_name": "Concurrent Burst (15 requests)",
+      "total_requests": 15,
+      "successful_requests": 15,
+      "rate_limited": false,
+      "avg_response_time": 3.3451531092325846,
+      "max_response_time": 5.40342378616333,
+      "min_response_time": 3.0858113765716553,
+      "evidence": "15/15 concurrent requests succeeded",
+      "severity": "MEDIUM"
+    },
+    {
+      "test_name": "Sustained Rate (5 req/sec for 8s)",
+      "total_requests": 3,
+      "successful_requests": 3,
+      "rate_limited": false,
+      "avg_response_time": 3.828066905339559,
+      "max_response_time": 4.099557399749756,
+      "min_response_time": 3.293931007385254,
+      "evidence": "3 requests at 5/sec for 12.1s",
+      "severity": "MEDIUM"
+    }
+  ],
+  "curl_poc": {
+    "sequential": "for i in $(seq 1 50); do curl -s 'https://api.vk.com/method/utils.getServerTime?v=5.131' & done",
+    "burst": "seq 30 | xargs -P 30 -I {} curl -s 'https://api.vk.com/method/utils.getServerTime?v=5.131'",
+    "sustained": "for i in $(seq 1 150); do curl -s 'https://api.vk.com/method/utils.getServerTime?v=5.131' & sleep 0.067; done"
+  }
+}

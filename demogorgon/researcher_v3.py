@@ -23,7 +23,7 @@ from typing import Any
 from rich.console import Console
 
 from demogorgon.core.config import ResearchConfig
-from demogorgon.core.scope import ScopeValidator
+from demogorgon.core.scope_legacy import ScopeValidator
 from demogorgon.controller.executive import ExecutiveController, Hypothesis
 from demogorgon.controller.execution_graph import ExecutionGraph
 from demogorgon.controller.self_evaluator import SelfEvaluator

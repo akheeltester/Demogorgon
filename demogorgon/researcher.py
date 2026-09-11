@@ -16,7 +16,7 @@ from typing import Any
 from rich.console import Console
 
 from demogorgon.core.config import ResearchConfig
-from demogorgon.core.scope import ScopeValidator
+from demogorgon.core.scope_legacy import ScopeValidator
 from demogorgon.memory import Memory
 from demogorgon.app_model import ApplicationModel
 from demogorgon.tools.http_client import HTTPClient

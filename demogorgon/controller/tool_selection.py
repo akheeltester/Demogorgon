@@ -72,23 +72,6 @@ EXECUTOR_REGISTRY: dict[str, ExecutorSpec] = {
         description="Tests endpoints for authentication bypass (no auth, expired token, modified token)",
         input_types=["endpoint"],
     ),
-    "privesc_tester": ExecutorSpec(
-        name="privesc_tester",
-        vuln_class="privesc",
-        module_path="demogorgon.executors.privesc_tester",
-        class_name="PrivescTester",
-        description="Tests for privilege escalation via role manipulation, parameter injection",
-        requires_auth=True,
-        input_types=["endpoint", "parameter"],
-    ),
-    "sqli_detector": ExecutorSpec(
-        name="sqli_detector",
-        vuln_class="sqli",
-        module_path="demogorgon.executors.sqli_detector",
-        class_name="SQLiDetector",
-        description="Tests for SQL injection using time-based, boolean, and error-based techniques",
-        input_types=["endpoint", "parameter"],
-    ),
     "ssrf_tester": ExecutorSpec(
         name="ssrf_tester",
         vuln_class="ssrf",

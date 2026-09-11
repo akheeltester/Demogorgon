@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from demogorgon.core.scope import ScopeValidator
+from demogorgon.core.scope_legacy import ScopeValidator
 from demogorgon.core.config import ResearchConfig
 from demogorgon.core.context import ContextBuilder
 from demogorgon.core.models import (

@@ -2,6 +2,13 @@
 
 Every module that checks whether a URL or hostname is in scope MUST use this
 class. No more ad-hoc substring matching.
+
+NOTE: This is the legacy ScopeValidator. For new code, use:
+    - demogorgon.core.scope.matcher.ScopeMatcher (for matching)
+    - demogorgon.core.scope.safety.SafetyGate (for safety checks)
+    - demogorgon.core.scope.parser.parse_program_policy (for parsing)
+
+This class is preserved for backward compatibility with existing researchers.
 """
 
 from __future__ import annotations
