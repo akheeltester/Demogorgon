@@ -203,6 +203,55 @@ class LLMManager:
                 fallback_provider, fb_key, fb_url, fb_model, is_fallback=True
             )
 
+    def configure_from_params(
+        self,
+        provider: str,
+        api_key: str = "",
+        base_url: str = "",
+        model: str = "",
+        fallback_provider: str = "",
+        fallback_api_key: str = "",
+        fallback_base_url: str = "",
+        fallback_model: str = "",
+    ) -> None:
+        """Configure from explicit parameters (for ProviderConfigManager integration).
+
+        This bypasses env var detection and configures directly.
+        """
+        self._max_retries = int(
+            self._env.get("DEMOGORGON_LLM_MAX_RETRIES", "2")
+        )
+        self._timeout = float(
+            self._env.get("DEMOGORGON_LLM_TIMEOUT", "60")
+        )
+
+        # Apply provider defaults for missing values
+        defaults = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["openai"])
+        if not base_url:
+            base_url = defaults.get("base_url", "")
+        if not model:
+            model = defaults.get("model", "")
+
+        self._configure_provider(provider, api_key, base_url, model)
+
+        # Configure fallback if specified
+        if fallback_provider and fallback_provider != provider:
+            fb_defaults = PROVIDER_DEFAULTS.get(fallback_provider, PROVIDER_DEFAULTS["openai"])
+            fb_url = fallback_base_url or fb_defaults.get("base_url", "")
+            fb_model = fallback_model or fb_defaults.get("model", "")
+            self._configure_provider(
+                fallback_provider, fallback_api_key, fb_url, fb_model, is_fallback=True
+            )
+
+    def configure_from_profile(self, profile: Any) -> None:
+        """Configure from a ProviderProfile object (from ProviderConfigManager)."""
+        self.configure_from_params(
+            provider=profile.provider,
+            api_key=profile.api_key,
+            base_url=profile.base_url,
+            model=profile.selected_model,
+        )
+
     def _configure_provider(
         self,
         name: str,
