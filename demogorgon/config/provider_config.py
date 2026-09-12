@@ -278,7 +278,7 @@ class ProviderConfigManager:
             try:
                 from ..llm.manager import LLMManager
                 manager = LLMManager()
-                manager.configure(
+                manager.configure_from_params(
                     provider=provider,
                     api_key=api_key,
                     base_url=base_url or None,

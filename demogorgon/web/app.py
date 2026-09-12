@@ -191,20 +191,29 @@ async def create_engagement(req: EngagementCreate):
 
 @app.get("/api/engagements")
 async def list_engagements():
-    """List all engagements/sessions."""
-    sessions = _get_all_sessions()
-    return {
-        "sessions": [
-            {
-                "target": s.target,
-                "status": s.status.value,
-                "findings": len(s.findings),
-                "evidence": s.evidence_count,
-                "strategy": s.strategy.state.strategy.value if hasattr(s.strategy, 'state') else "unknown",
-            }
-            for s in sessions
-        ]
-    }
+    """List all engagements/sessions (active + saved)."""
+    # Active sessions
+    sessions = []
+    for s in _get_all_sessions():
+        sessions.append({
+            "target": s.target,
+            "session_id": s.session_id,
+            "status": s.status.value,
+            "findings": len(s.findings),
+            "evidence": s.evidence_count,
+            "strategy": s.strategy.state.strategy.value if hasattr(s.strategy, 'state') else "unknown",
+            "active": True,
+        })
+
+    # Saved sessions from disk
+    from ..agent.session import AgentSession
+    saved = AgentSession.list_saved_sessions()
+    for s in saved:
+        # Don't duplicate if already active
+        if not any(sess.target == s["target"] for sess in _get_all_sessions()):
+            sessions.append({**s, "active": False})
+
+    return {"sessions": sessions}
 
 
 @app.get("/api/engagements/{engagement_id}")
@@ -263,6 +272,20 @@ async def stop_engagement(engagement_id: str):
         raise HTTPException(status_code=404, detail="Engagement not found")
     await session.stop()
     return {"status": "stopped"}
+
+
+@app.post("/api/engagements/resume")
+async def resume_saved_session(target: str):
+    """Resume a saved session from disk."""
+    from ..agent.session import AgentSession
+    saved = AgentSession.list_saved_sessions()
+    for s in saved:
+        if s["target"] == target:
+            session = AgentSession.load_state(s["workspace"])
+            _set_current_session(session)
+            asyncio.create_task(_run_session(session))
+            return {"status": "resumed", "target": target}
+    raise HTTPException(status_code=404, detail="Saved session not found")
 
 
 @app.post("/api/engagements/{engagement_id}/instructions")

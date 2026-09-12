@@ -164,7 +164,7 @@ async def test_provider_connection(
         from ..llm.manager import LLMManager
 
         manager = LLMManager()
-        manager.configure(provider=provider, api_key=api_key, base_url=base_url or None)
+        manager.configure_from_params(provider=provider, api_key=api_key, base_url=base_url or None)
 
         # Health check
         latency = await manager.health_check()

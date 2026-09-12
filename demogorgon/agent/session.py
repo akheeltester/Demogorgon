@@ -95,6 +95,10 @@ class AgentSession:
     def __init__(self, config: SessionConfig | None = None):
         self.config = config or SessionConfig()
 
+        # Session identity
+        import uuid
+        self.session_id: str = str(uuid.uuid4())[:12]
+
         # Core state
         self.status = SessionStatus.INITIALIZING
         self.target = self.config.target
@@ -208,6 +212,10 @@ class AgentSession:
 
                 # Emit progress
                 await self._emit_progress(cycle)
+
+                # Auto-save every 5 cycles
+                if cycle % 5 == 0:
+                    self.auto_save()
 
         except KeyboardInterrupt:
             await self.events.emit(EventType.SESSION_END, {"reason": "user_interrupt"}, source="session")
@@ -385,9 +393,11 @@ class AgentSession:
         if not self.workspace_dir:
             return ""
 
+        os.makedirs(self.workspace_dir, exist_ok=True)
         state_path = os.path.join(self.workspace_dir, "agent_state.json")
         import json
         state = {
+            "session_id": self.session_id,
             "target": self.target,
             "status": self.status.value,
             "start_time": self.start_time,
@@ -400,12 +410,20 @@ class AgentSession:
             "budget": self.budget.to_dict(),
             "tokens": self.token_tracker.to_dict(),
             "config": self.config.to_dict(),
+            "scope_assets": self.scope_assets,
+            "out_of_scope": self.out_of_scope,
+            "restrictions": self.restrictions,
         }
         Path(state_path).write_text(json.dumps(state, indent=2))
 
         # Save trace
         trace_path = os.path.join(self.workspace_dir, "agent_trace.json")
         self.trace.save(trace_path)
+
+        # Save findings separately for easy access
+        if self.findings:
+            findings_path = os.path.join(self.workspace_dir, "findings.json")
+            Path(findings_path).write_text(json.dumps(self.findings, indent=2))
 
         return state_path
 
@@ -420,6 +438,7 @@ class AgentSession:
         data = json.loads(Path(state_path).read_text())
         config = SessionConfig(**data.get("config", {}))
         session = cls(config=config)
+        session.session_id = data.get("session_id", session.session_id)
         session.workspace_dir = workspace_dir
         session.target = data.get("target", "")
         session.status = SessionStatus(data.get("status", "ready"))
@@ -429,12 +448,50 @@ class AgentSession:
         session.findings = data.get("findings", [])
         session.chains = data.get("chains", [])
         session.evidence_count = data.get("evidence_count", 0)
+        session.scope_assets = data.get("scope_assets", [])
+        session.out_of_scope = data.get("out_of_scope", [])
+        session.restrictions = data.get("restrictions", [])
 
         if "strategy" in data:
             session.strategy.load_state(data["strategy"])
 
         # Load trace
         trace_path = os.path.join(workspace_dir, "agent_trace.json")
-        session.trace = ResearchTrace.load(trace_path)
+        if os.path.exists(trace_path):
+            session.trace = ResearchTrace.load(trace_path)
 
         return session
+
+    @staticmethod
+    def list_saved_sessions(workspaces_dir: str = "") -> list[dict[str, Any]]:
+        """List all saved sessions from workspaces directory."""
+        import json
+        base = workspaces_dir or os.path.join(os.getcwd(), "workspaces")
+        if not os.path.exists(base):
+            return []
+
+        sessions = []
+        for name in os.listdir(base):
+            state_path = os.path.join(base, name, "agent_state.json")
+            if os.path.exists(state_path):
+                try:
+                    data = json.loads(Path(state_path).read_text())
+                    sessions.append({
+                        "session_id": data.get("session_id", ""),
+                        "target": data.get("target", name),
+                        "status": data.get("status", "unknown"),
+                        "findings": len(data.get("findings", [])),
+                        "evidence": data.get("evidence_count", 0),
+                        "workspace": os.path.join(base, name),
+                    })
+                except Exception:
+                    pass
+
+        return sessions
+
+    def auto_save(self) -> None:
+        """Auto-save state (called periodically during research)."""
+        try:
+            self.save_state()
+        except Exception as e:
+            logger.warning(f"Auto-save failed: {e}")
