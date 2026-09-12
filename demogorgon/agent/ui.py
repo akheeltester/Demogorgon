@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from typing import Any
 
 from rich.console import Console
@@ -37,13 +38,7 @@ class TerminalUI:
     """Live terminal UI for the agent session.
 
     Subscribes to EventBus events and renders them in real time.
-    Runs in a separate task, reading user input in the background.
-
-    Usage:
-        ui = TerminalUI(event_bus, token_tracker, budget, trace, strategy, commands)
-        await ui.start()
-        # ... agent runs ...
-        await ui.stop()
+    Uses Rich Live for in-place updates when possible.
     """
 
     def __init__(
@@ -67,6 +62,12 @@ class TerminalUI:
         self._running = False
         self._input_task = None
         self._event_task = None
+
+        # Live status state
+        self._last_status_line = ""
+        self._last_phase = ""
+        self._event_count = 0
+        self._tool_active = ""
 
         # Register event handlers
         self._register_handlers()
@@ -98,7 +99,7 @@ class TerminalUI:
         self.event_bus.on(EventType.WARNING, self._on_warning)
 
     async def start(self):
-        """Start the UI (event listener + input reader)."""
+        """Start the UI (event listener)."""
         self._running = True
         self._event_task = asyncio.create_task(self._event_loop())
 
@@ -109,9 +110,14 @@ class TerminalUI:
             self._event_task.cancel()
 
     async def _event_loop(self):
-        """Main event loop — just keep alive, events come via handlers."""
+        """Main event loop — periodic status refresh."""
         while self._running:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(2.0)
+            # Periodic status line update
+            if self.session and self.session.is_running and not self.session.is_paused:
+                status = self.render_status_line()
+                if status != self._last_status_line:
+                    self._last_status_line = status
 
     def render_status_line(self) -> str:
         """Render a single status line for the terminal."""
@@ -121,7 +127,7 @@ class TerminalUI:
         if self.strategy:
             s = self.strategy.state
             parts.append(f"[bold cyan]{s.strategy.value.upper()}[/bold cyan]")
-            parts.append(f"({s.cycles_in_strategy} cycles)")
+            parts.append(f"({s.cycles_in_strategy}c)")
 
         # Tokens
         if self.token_tracker:
@@ -189,6 +195,25 @@ class TerminalUI:
 
         return Panel("\n".join(lines), title="Recent Activity", border_style="blue")
 
+    def render_session_header(self) -> Panel:
+        """Render the session header panel."""
+        if not self.session:
+            return Panel("[dim]No session[/dim]", border_style="cyan")
+
+        table = Table(show_header=False, box=None, padding=(0, 2))
+        table.add_column("Key", style="bold")
+        table.add_column("Value")
+
+        strategy = self.strategy.state.strategy.value.upper() if self.strategy else "?"
+        status = "RUNNING" if self.session.is_running and not self.session.is_paused else "PAUSED" if self.session.is_paused else "STOPPED"
+
+        table.add_row("Target", self.session.target or "—")
+        table.add_row("Model", f"{self.session.config.provider}/{self.session.config.model}")
+        table.add_row("Phase", strategy)
+        table.add_row("Status", status)
+
+        return Panel(table, title="DEMOGOORGON", border_style="cyan", subtitle=self.render_status_line())
+
     # Event handlers
 
     async def _on_session_start(self, event: AgentEvent):
@@ -207,7 +232,6 @@ class TerminalUI:
         cycle = event.data.get("cycle", 0)
         strategy = event.data.get("strategy", "unknown")
         findings = event.data.get("findings", 0)
-        budget = event.data.get("budget", "")
         tokens = event.data.get("tokens", "")
 
         # Single-line progress update
@@ -225,26 +249,32 @@ class TerminalUI:
         console.print(f"  [bold cyan]Strategy: {old} → {new}[/bold cyan] ({reason})")
 
     async def _on_decision_start(self, event: AgentEvent):
-        pass  # Too verbose for terminal
+        console.print("  [dim]Deciding next action...[/dim]", end="")
 
     async def _on_decision_complete(self, event: AgentEvent):
-        pass
+        action = event.data.get("action", "")
+        target = event.data.get("target", "")
+        if action:
+            console.print(f" → [bold]{action}[/bold] {target[:50]}")
 
     async def _on_tool_execute(self, event: AgentEvent):
         tool = event.data.get("tool", "unknown")
         target = event.data.get("target", "")
-        console.print(f"    [magenta]Executing {tool}[/magenta] on {target[:50]}")
+        self._tool_active = tool
+        console.print(f"    [magenta]▶ {tool}[/magenta] {target[:60]}")
 
     async def _on_tool_result(self, event: AgentEvent):
         tool = event.data.get("tool", "unknown")
         success = event.data.get("success", False)
         icon = "[green]✓[/green]" if success else "[red]✗[/red]"
         console.print(f"    {icon} {tool} complete")
+        self._tool_active = ""
 
     async def _on_tool_error(self, event: AgentEvent):
         tool = event.data.get("tool", "unknown")
         error = event.data.get("error", "unknown")
         console.print(f"    [red]✗ {tool} failed: {error[:60]}[/red]")
+        self._tool_active = ""
 
     async def _on_finding(self, event: AgentEvent):
         title = event.data.get("title", "Untitled")
@@ -285,14 +315,17 @@ class TerminalUI:
         console.print(f"\n  [red]⛔ BUDGET EXCEEDED:[/red] {reason}\n")
 
     async def _on_llm_request(self, event: AgentEvent):
-        pass  # Too verbose
+        model = event.data.get("model", "")
+        console.print(f"  [dim]→ LLM ({model})...[/dim]", end="")
 
     async def _on_llm_response(self, event: AgentEvent):
-        pass  # Too verbose
+        latency = event.data.get("latency_ms", 0)
+        tokens = event.data.get("tokens", 0)
+        console.print(f" [green]✓[/green] {latency:.0f}ms {tokens}tok")
 
     async def _on_llm_error(self, event: AgentEvent):
         error = event.data.get("error", "unknown")
-        console.print(f"  [red]LLM Error:[/red] {error[:60]}")
+        console.print(f" [red]✗ {error[:60]}[/red]")
 
     async def _on_thinking(self, event: AgentEvent):
         cycle = event.data.get("cycle", 0)

@@ -30,6 +30,7 @@ from .models import (
     InstructionRequest, SessionControl,
 )
 from .ws_bridge import get_web_bridge
+from ..agent.events import EventType
 
 logger = logging.getLogger(__name__)
 
@@ -250,8 +251,9 @@ async def pause_engagement(engagement_id: str):
     session = _get_session_by_id(engagement_id)
     if not session:
         raise HTTPException(status_code=404, detail="Engagement not found")
-    await session.pause()
-    return {"status": "paused"}
+    session.is_paused = True
+    await session.events.emit(EventType.STATUS_CHANGE, {"status": "paused"}, source="web")
+    return {"status": "paused", "session_id": engagement_id}
 
 
 @app.post("/api/engagements/{engagement_id}/resume")
@@ -260,8 +262,9 @@ async def resume_engagement(engagement_id: str):
     session = _get_session_by_id(engagement_id)
     if not session:
         raise HTTPException(status_code=404, detail="Engagement not found")
-    await session.resume()
-    return {"status": "resumed"}
+    session.is_paused = False
+    await session.events.emit(EventType.STATUS_CHANGE, {"status": "resumed"}, source="web")
+    return {"status": "resumed", "session_id": engagement_id}
 
 
 @app.post("/api/engagements/{engagement_id}/stop")
@@ -420,6 +423,23 @@ _current_session = None
 _sessions: dict[str, Any] = {}
 
 
+def set_terminal_session(session) -> None:
+    """Set the terminal's AgentSession so web UI shares it.
+
+    Called by AgentMain after session creation.
+    """
+    global _current_session
+    _current_session = session
+    _sessions[session.target] = session
+
+    # Wire EventBus to WebSocket bridge
+    try:
+        bridge = get_web_bridge()
+        session.events.on_all(bridge.handle_event)
+    except Exception as e:
+        logger.warning(f"Could not wire EventBus to WebSocket bridge: {e}")
+
+
 def _set_current_session(session):
     global _current_session
     _current_session = session
@@ -427,10 +447,16 @@ def _set_current_session(session):
 
 
 def _get_all_sessions() -> list:
-    return list(_sessions.values())
+    # Include terminal session if set
+    sessions = list(_sessions.values())
+    if _current_session and _current_session not in sessions:
+        sessions.insert(0, _current_session)
+    return sessions
 
 
 def _get_session_by_id(session_id: str):
+    if _current_session and (_current_session.target == session_id or _current_session.session_id == session_id):
+        return _current_session
     return _sessions.get(session_id)
 
 

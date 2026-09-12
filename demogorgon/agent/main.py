@@ -75,6 +75,13 @@ class AgentMain:
         self.session = AgentSession(config=session_config)
         await self.session.initialize()
 
+        # Wire session to web UI (shares same session)
+        try:
+            from demogorgon.web.app import set_terminal_session
+            set_terminal_session(self.session)
+        except ImportError:
+            pass  # Web UI not available
+
         # 3. Create UI
         self.ui = TerminalUI(
             event_bus=self.session.events,

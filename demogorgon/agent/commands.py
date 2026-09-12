@@ -42,6 +42,13 @@ class CommandType(Enum):
     EXPLOIT = "exploit"
     CHAIN = "chain"
     QUIT = "quit"
+    MODEL = "model"
+    PROVIDER = "provider"
+    SCOPE = "scope"
+    TOOLS = "tools"
+    MCP = "mcp"
+    SCOPE_ADD = "scope-add"
+    SCOPE_REMOVE = "scope-remove"
 
 
 @dataclass
@@ -71,6 +78,13 @@ COMMAND_HELP = """
 ║ /chains        List attack chains                            ║
 ║ /evidence      Show evidence collected                       ║
 ║ /targets       Show discovered targets                       ║
+║ /scope         Show current scope                            ║
+║ /scope-add     Add asset to scope                            ║
+║ /scope-remove  Remove asset from scope                       ║
+║ /tools         Show available tool capabilities              ║
+║ /mcp           Show MCP server status                        ║
+║ /model         Show/change current model                     ║
+║ /provider      Show/change current provider                  ║
 ║ /pause         Pause the agent loop                          ║
 ║ /resume        Resume the agent loop                         ║
 ║ /stop          Stop the agent completely                     ║
@@ -87,6 +101,13 @@ COMMAND_HELP = """
 ║ /log [n]       Show last N log entries                       ║
 ║ /quit          Exit the agent                                ║
 ╚══════════════════════════════════════════════════════════════╝
+
+Natural language also works — just type what you want:
+  focus on XSS in /search
+  scan for IDOR on API endpoints
+  slow down, passive only
+  show findings
+  stop
 """
 
 
@@ -130,6 +151,13 @@ class CommandProcessor:
             "chains": self._cmd_chains,
             "evidence": self._cmd_evidence,
             "targets": self._cmd_targets,
+            "scope": self._cmd_scope,
+            "scope-add": self._cmd_scope_add,
+            "scope-remove": self._cmd_scope_remove,
+            "tools": self._cmd_tools,
+            "mcp": self._cmd_mcp,
+            "model": self._cmd_model,
+            "provider": self._cmd_provider,
             "pause": self._cmd_pause,
             "resume": self._cmd_resume,
             "stop": self._cmd_stop,
@@ -167,13 +195,119 @@ class CommandProcessor:
 
     async def _handle_instruction(self, text: str, state: dict[str, Any]) -> CommandResult:
         """Handle a natural language instruction from the user."""
-        self._pending_instruction = text
-        return CommandResult(
-            success=True,
-            message=f"Instruction received: \"{text}\"",
-            data={"instruction": text},
-            action="continue",
-        )
+        from .natural_language import NaturalLanguageParser, InstructionProcessor, InstructionType
+
+        parser = NaturalLanguageParser()
+        processor = InstructionProcessor()
+        parsed = parser.parse(text)
+        context_update = processor.process(parsed)
+
+        # Route based on parsed type
+        session = state.get("session")
+        trace = state.get("trace")
+
+        if parsed.type == InstructionType.QUERY:
+            # Queries — route to existing handlers
+            lower = text.lower()
+            if any(w in lower for w in ["finding", "findings"]):
+                return await self._cmd_findings("", state)
+            elif any(w in lower for w in ["status", "state"]):
+                return await self._cmd_status("", state)
+            elif any(w in lower for w in ["evidence"]):
+                return await self._cmd_evidence("", state)
+            elif any(w in lower for w in ["chain", "chains"]):
+                return await self._cmd_chains("", state)
+            elif any(w in lower for w in ["scope"]):
+                return await self._cmd_scope("", state)
+            elif any(w in lower for w in ["budget", "cost"]):
+                return await self._cmd_budget("", state)
+            elif any(w in lower for w in ["tool", "tools", "capability", "capabilities"]):
+                return await self._cmd_tools("", state)
+            elif any(w in lower for w in ["trace", "log", "history"]):
+                return await self._cmd_trace("", state)
+            elif any(w in lower for w in ["help"]):
+                return await self._cmd_help("", state)
+            else:
+                return CommandResult(
+                    success=True,
+                    message=f"Query: \"{text}\"\nTry /status, /findings, /evidence, /scope, /tools, or /help",
+                )
+
+        elif parsed.type == InstructionType.DIRECT:
+            lower = text.lower()
+            if any(w in lower for w in ["stop", "halt", "quit", "exit"]):
+                return await self._cmd_stop("", state)
+            elif any(w in lower for w in ["pause", "wait"]):
+                return await self._cmd_pause("", state)
+            elif any(w in lower for w in ["resume", "continue", "start"]):
+                return await self._cmd_resume("", state)
+            elif any(w in lower for w in ["report"]):
+                return await self._cmd_report("", state)
+            else:
+                self._pending_instruction = text
+                return CommandResult(
+                    success=True,
+                    message=f"Instruction: \"{text}\"\nConfidence: {parsed.confidence:.0%}",
+                    data={"instruction": text, "parsed": context_update},
+                    action="continue",
+                )
+
+        elif parsed.type == InstructionType.FOCUS:
+            if session and trace:
+                from .trace import TraceEntryType
+                trace.add(
+                    TraceEntryType.USER_INSTRUCTION,
+                    f"Focus: {parsed.vuln_class or 'general'}",
+                )
+            parts = [f"Focusing on: {parsed.vuln_class or 'general research'}"]
+            if parsed.endpoint:
+                parts.append(f"Endpoint: {parsed.endpoint}")
+            return CommandResult(
+                success=True,
+                message="\n".join(parts),
+                data={"parsed": context_update},
+                action="continue",
+            )
+
+        elif parsed.type == InstructionType.IGNORE:
+            return CommandResult(
+                success=True,
+                message=f"Ignoring: {parsed.vuln_class or parsed.raw_text}",
+                data={"parsed": context_update},
+                action="continue",
+            )
+
+        elif parsed.type == InstructionType.CONSTRAINT:
+            constraint_desc = {
+                "rate_limit": "Rate limiting enabled — slowing down requests",
+                "no_active": "Passive mode — no active exploitation",
+                "scope_only": "Strict scope — testing only declared assets",
+                "auth_only": "Authenticated testing mode",
+            }.get(parsed.constraint, parsed.constraint)
+            return CommandResult(
+                success=True,
+                message=f"Constraint applied: {constraint_desc}",
+                data={"parsed": context_update},
+                action="continue",
+            )
+
+        elif parsed.type == InstructionType.HINT:
+            self._pending_instruction = text
+            return CommandResult(
+                success=True,
+                message=f"Hint noted: \"{text}\"",
+                data={"parsed": context_update},
+                action="continue",
+            )
+
+        else:
+            self._pending_instruction = text
+            return CommandResult(
+                success=True,
+                message=f"Instruction received: \"{text}\"",
+                data={"parsed": context_update},
+                action="continue",
+            )
 
     def get_pending_instruction(self) -> str | None:
         """Get and clear any pending user instruction."""
@@ -457,6 +591,182 @@ class CommandProcessor:
             message="Quitting agent...",
             action="stop",
         )
+
+    async def _cmd_scope(self, args: str, state: dict[str, Any]) -> CommandResult:
+        session = state.get("session")
+        if not session:
+            return CommandResult(success=True, message="No session active.")
+
+        lines = [f"Target: {session.target}"]
+        if session.scope_assets:
+            lines.append(f"\nIn-Scope Assets ({len(session.scope_assets)}):")
+            for asset in session.scope_assets[:20]:
+                if isinstance(asset, dict):
+                    lines.append(f"  + {asset.get('pattern', asset.get('asset', ''))} ({asset.get('asset_type', 'domain')})")
+                else:
+                    lines.append(f"  + {asset}")
+        else:
+            lines.append("\nNo scope assets defined — testing target only.")
+
+        if session.out_of_scope:
+            lines.append(f"\nOut-of-Scope ({len(session.out_of_scope)}):")
+            for asset in session.out_of_scope[:10]:
+                if isinstance(asset, dict):
+                    lines.append(f"  - {asset.get('pattern', asset.get('asset', ''))}")
+                else:
+                    lines.append(f"  - {asset}")
+
+        if session.restrictions:
+            lines.append(f"\nRestrictions ({len(session.restrictions)}):")
+            for r in session.restrictions[:10]:
+                if isinstance(r, dict):
+                    lines.append(f"  ! {r.get('description', r.get('category', ''))}")
+                else:
+                    lines.append(f"  ! {r}")
+
+        return CommandResult(success=True, message="\n".join(lines))
+
+    async def _cmd_scope_add(self, args: str, state: dict[str, Any]) -> CommandResult:
+        session = state.get("session")
+        if not session:
+            return CommandResult(success=False, message="No session active.")
+        if not args.strip():
+            return CommandResult(success=False, message="Usage: /scope-add <pattern> [type]\n  e.g., /scope-add api.example.com api\n  e.g., /scope-add *.example.com domain")
+
+        parts = args.strip().split()
+        pattern = parts[0]
+        asset_type = parts[1] if len(parts) > 1 else "domain"
+
+        session.scope_assets.append({
+            "pattern": pattern,
+            "asset_type": asset_type,
+        })
+        return CommandResult(success=True, message=f"Added to scope: {pattern} ({asset_type})")
+
+    async def _cmd_scope_remove(self, args: str, state: dict[str, Any]) -> CommandResult:
+        session = state.get("session")
+        if not session:
+            return CommandResult(success=False, message="No session active.")
+        if not args.strip():
+            return CommandResult(success=False, message="Usage: /scope-remove <pattern>")
+
+        pattern = args.strip()
+        original = len(session.scope_assets)
+        session.scope_assets = [
+            a for a in session.scope_assets
+            if (a.get("pattern", a) if isinstance(a, dict) else a) != pattern
+        ]
+        removed = original - len(session.scope_assets)
+        if removed:
+            return CommandResult(success=True, message=f"Removed {removed} asset(s) matching: {pattern}")
+        return CommandResult(success=False, message=f"No assets matching: {pattern}")
+
+    async def _cmd_tools(self, args: str, state: dict[str, Any]) -> CommandResult:
+        session = state.get("session")
+        if not session:
+            return CommandResult(success=True, message="No session active.")
+
+        caps = session.capability_registry.get_available_capabilities()
+        if not caps:
+            return CommandResult(success=True, message="No tools registered.\nTools are auto-discovered when security tools are installed.")
+
+        lines = [f"Available Capabilities ({len(caps)}):"]
+        for cap in sorted(caps):
+            info = session.capability_registry.get_capability_info(cap)
+            tools = info.get("tools", [])
+            desc = info.get("description", "")
+            lines.append(f"  {cap}: {desc}")
+            lines.append(f"    Tools: {', '.join(tools)}")
+
+        status = session.capability_registry.get_status()
+        lines.append(f"\nTotal tools: {status['total_tools']}")
+
+        return CommandResult(success=True, message="\n".join(lines))
+
+    async def _cmd_mcp(self, args: str, state: dict[str, Any]) -> CommandResult:
+        session = state.get("session")
+        if not session:
+            return CommandResult(success=True, message="No session active.")
+
+        mcp_manager = getattr(session, '_mcp_manager', None)
+        if not mcp_manager:
+            return CommandResult(success=True, message="MCP not initialized.\nConfigure MCP servers in ~/.demogorgon/config.json.")
+
+        server_status = mcp_manager.get_server_status()
+        if not server_status:
+            return CommandResult(success=True, message="No MCP servers configured.")
+
+        lines = ["MCP Servers:"]
+        for name, info in server_status.items():
+            connected = "✓ connected" if info.get("connected") else "✗ disconnected"
+            tools = info.get("tools", 0)
+            lines.append(f"  {name}: {connected} ({tools} tools)")
+
+        return CommandResult(success=True, message="\n".join(lines))
+
+    async def _cmd_model(self, args: str, state: dict[str, Any]) -> CommandResult:
+        session = state.get("session")
+        if not session:
+            return CommandResult(success=True, message="No session active.")
+
+        if args.strip():
+            # Change model
+            new_model = args.strip()
+            session.config.model = new_model
+            # Reconfigure LLM manager
+            try:
+                from demogorgon.llm.manager import LLMManager
+                llm = LLMManager()
+                llm.configure_from_params(
+                    provider=session.config.provider,
+                    api_key=session.config.api_key,
+                    base_url=session.config.base_url,
+                    model=new_model,
+                )
+                return CommandResult(success=True, message=f"Model changed to: {new_model}")
+            except Exception as e:
+                return CommandResult(success=False, message=f"Failed to change model: {e}")
+
+        # Show current model
+        return CommandResult(
+            success=True,
+            message=f"Provider: {session.config.provider}\nModel: {session.config.model}\nBase URL: {session.config.base_url}",
+        )
+
+    async def _cmd_provider(self, args: str, state: dict[str, Any]) -> CommandResult:
+        session = state.get("session")
+        if not session:
+            return CommandResult(success=True, message="No session active.")
+
+        if args.strip():
+            # Change provider
+            new_provider = args.strip()
+            try:
+                from demogorgon.config.provider_config import ProviderConfigManager
+                mgr = ProviderConfigManager()
+                profile = mgr.get_profile(new_provider)
+                if not profile:
+                    return CommandResult(success=False, message=f"Provider '{new_provider}' not configured.\nRun: python -m demogorgon setup")
+
+                session.config.provider = new_provider
+                session.config.api_key = profile.api_key
+                session.config.base_url = profile.base_url
+                session.config.model = profile.selected_model
+                mgr.load_into_environment(new_provider)
+                return CommandResult(success=True, message=f"Provider changed to: {new_provider}\nModel: {profile.selected_model}")
+            except Exception as e:
+                return CommandResult(success=False, message=f"Failed to change provider: {e}")
+
+        # Show current provider
+        from demogorgon.config.provider_config import ProviderConfigManager
+        mgr = ProviderConfigManager()
+        active = mgr.get_active_profile()
+        if active:
+            return CommandResult(
+                success=True,
+                message=f"Active: {active.provider}\nModel: {active.selected_model}\nKey: {active.masked_key}",
+            )
+        return CommandResult(success=True, message="No provider configured.")
 
     def get_history(self) -> list[tuple[str, CommandResult, float]]:
         return list(self._history)

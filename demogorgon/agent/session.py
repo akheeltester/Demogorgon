@@ -157,6 +157,19 @@ class AgentSession:
         if self.workspace_dir:
             os.makedirs(self.workspace_dir, exist_ok=True)
 
+        # Register built-in tool capabilities
+        self._register_builtin_tools()
+
+        # Try to initialize MCP manager
+        self._mcp_manager = None
+        try:
+            from .mcp import MCPManager, MCPServerConfig, DEFAULT_SERVERS
+            self._mcp_manager = MCPManager()
+            for name, config in DEFAULT_SERVERS.items():
+                self._mcp_manager.add_server(name, config)
+        except Exception:
+            pass
+
         # Emit session start
         await self.events.emit(
             EventType.SESSION_START,
@@ -168,6 +181,46 @@ class AgentSession:
         self.is_running = True
 
         logger.info(f"Agent session initialized: target={self.target}")
+
+    def _register_builtin_tools(self) -> None:
+        """Register built-in security tool capabilities."""
+        import shutil
+        tools = {
+            "subfinder": ["subdomain_enum"],
+            "httpx": ["http_request", "tech_detect"],
+            "katana": ["url_discovery", "crawling"],
+            "ffuf": ["dir_scan", "param_fuzz"],
+            "nuclei": ["vuln_scan"],
+            "naabu": ["port_scan"],
+            "nmap": ["port_scan", "dns_recon"],
+            "dnsx": ["dns_recon"],
+            "gau": ["url_discovery"],
+            "dalfo": ["url_discovery"],
+        }
+        for tool_name, capabilities in tools.items():
+            if shutil.which(tool_name):
+                self.capability_registry.register_tool(
+                    tool_name,
+                    capabilities=capabilities,
+                    reliability=0.7,
+                    speed=0.6,
+                )
+
+        # Register HTTP as always available
+        self.capability_registry.register_tool(
+            "http_executor",
+            capabilities=["http_request", "http_method_test"],
+            reliability=0.9,
+            speed=0.8,
+        )
+
+        # Register browser as always available
+        self.capability_registry.register_tool(
+            "browser",
+            capabilities=["browser_render", "browser_interact"],
+            reliability=0.8,
+            speed=0.5,
+        )
 
     async def run(self) -> dict[str, Any]:
         """Run the agent's main loop.
