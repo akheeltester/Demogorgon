@@ -162,6 +162,52 @@ class AgentMain:
 
         return result
 
+    async def start_resume(self, session_id: str = "") -> dict[str, Any]:
+        """Resume a saved session — interactive session picker if no ID given."""
+        from ..agent.session import AgentSession
+        from rich.console import Console
+        from rich.table import Table
+        from rich.prompt import Confirm
+
+        console = Console()
+        saved = AgentSession.list_saved_sessions()
+
+        if not saved:
+            console.print("[yellow]No saved sessions found.[/yellow]")
+            return {"error": "no_saved_sessions"}
+
+        if session_id:
+            # Find by session_id
+            for s in saved:
+                if s["session_id"] == session_id:
+                    console.print(f"[green]Resuming: {s['target']}[/green]")
+                    return await self.resume(s["workspace"])
+            console.print(f"[red]Session {session_id} not found.[/red]")
+            return {"error": "session_not_found"}
+
+        # Interactive picker
+        table = Table(title="Saved Sessions", show_header=True, header_style="bold")
+        table.add_column("#", width=4)
+        table.add_column("Target")
+        table.add_column("Status")
+        table.add_column("Findings", width=8)
+        table.add_column("Evidence", width=8)
+
+        for i, s in enumerate(saved, 1):
+            table.add_row(
+                str(i), s["target"], s["status"],
+                str(s["findings"]), str(s["evidence"]),
+            )
+
+        console.print(table)
+
+        from rich.prompt import Prompt
+        choice = Prompt.ask("Select session", choices=[str(i) for i in range(1, len(saved) + 1)], default="1")
+        selected = saved[int(choice) - 1]
+
+        console.print(f"\n[green]Resuming: {selected['target']}[/green]")
+        return await self.resume(selected["workspace"])
+
     def _create_llm_callback(self):
         """Create an LLM callback that tracks tokens and emits events."""
         from demogorgon.llm.manager import LLMManager
@@ -309,12 +355,20 @@ class AgentMain:
 
     async def _input_loop(self):
         """Listen for user input in the background."""
+        from rich.console import Console
+        _console = Console()
+
+        # Show initial help
+        _console.print("\n[bold cyan]Commands:[/] /help /status /findings /pause /resume /stop /model /scope /evidence /report")
+        _console.print("[dim]Type naturally or use /commands. Ctrl+C to stop.[/dim]\n")
+
         loop = asyncio.get_event_loop()
+        prompt = "\n[bold green]demogorgon>[/bold green] "
 
         while self.session and self.session.is_running:
             try:
                 # Run input() in a thread to not block the event loop
-                line = await loop.run_in_executor(None, lambda: input("\n> "))
+                line = await loop.run_in_executor(None, lambda: input(prompt))
 
                 if not line.strip():
                     continue
@@ -324,12 +378,10 @@ class AgentMain:
                 result = await self.session.commands.process(line.strip(), state)
 
                 # Print result
-                from rich.console import Console
-                console = Console()
                 if result.success:
-                    console.print(result.message, style="green")
+                    _console.print(result.message, style="green")
                 else:
-                    console.print(result.message, style="red")
+                    _console.print(result.message, style="red")
 
                 # Handle actions
                 if result.action == "stop":

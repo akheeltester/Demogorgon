@@ -1,17 +1,16 @@
 """Demogorgon — Autonomous Security Research Agent.
 
 Usage:
-    python -m demogorgon                              # Interactive menu
-    python -m demogorgon agent                         # Interactive agent
-    python -m demogorgon agent https://example.com     # Agent with target
-    python -m demogorgon https://example.com           # Quick scan
-    python -m demogorgon --program                     # Paste program policy
-    python -m demogorgon resume                        # Resume engagement
-    python -m demogorgon doctor                        # Diagnostics
-    python -m demogorgon setup                         # Configure providers
-    python -m demogorgon providers                     # List configured providers
-    python -m demogorgon models                        # List available models
-    python -m demogorgon web                           # Start web control center
+    python -m demogorgon                              # Interactive agent (default)
+    python -m demogorgon <target>                     # Agent with target
+    python -m demogorgon --resume                     # Resume saved session
+    python -m demogorgon --session <id>               # Resume specific session
+    python -m demogorgon --non-interactive <target>   # Non-interactive mode
+    python -m demogorgon setup                        # Configure providers
+    python -m demogorgon providers                    # List providers
+    python -m demogorgon models                       # List models
+    python -m demogorgon web                          # Web control center
+    python -m demogorgon doctor                       # Diagnostics
 """
 
 import asyncio
@@ -21,49 +20,68 @@ import sys
 def main():
     args = sys.argv[1:]
 
-    # ── Subcommand routing ──────────────────────────────────────
-
+    # ── Default: launch interactive agent ────────────────────────
     if not args:
-        # Interactive menu (default)
-        from demogorgon.cli import main as cli_main
-        asyncio.run(cli_main())
+        from demogorgon.agent.main import AgentMain
+        agent = AgentMain()
+        asyncio.run(agent.start())
         return
 
     command = args[0]
 
-    if command == "agent":
+    # ── Flag-based routing ───────────────────────────────────────
+    if command == "--resume":
         from demogorgon.agent.main import AgentMain
         agent = AgentMain()
+        asyncio.run(agent.start_resume())
+        return
+
+    if command == "--session":
+        session_id = args[1] if len(args) > 1 else ""
+        if not session_id:
+            print("Usage: demogorgon --session <session-id>")
+            return
+        from demogorgon.agent.main import AgentMain
+        agent = AgentMain()
+        asyncio.run(agent.start_resume(session_id=session_id))
+        return
+
+    if command == "--non-interactive":
         target = args[1] if len(args) > 1 else ""
-        asyncio.run(agent.start(target=target, interactive=not bool(target)))
+        if not target:
+            print("Usage: demogorgon --non-interactive <target>")
+            return
+        from demogorgon.agent.main import AgentMain
+        agent = AgentMain()
+        asyncio.run(agent.start(target=target, interactive=False))
+        return
 
-    elif command == "setup":
+    if command in ("-h", "--help", "help"):
+        _print_help()
+        return
+
+    # ── Subcommand routing ──────────────────────────────────────
+    if command == "setup":
         _cmd_setup()
-
     elif command == "providers":
         _cmd_providers()
-
     elif command == "models":
         _cmd_models(args[1] if len(args) > 1 else None)
-
     elif command == "web":
         _cmd_web(args[1:] if len(args) > 1 else [])
-
     elif command == "doctor":
         from demogorgon.cli import cmd_doctor
         asyncio.run(cmd_doctor())
-
     elif command == "resume":
-        from demogorgon.cli import cmd_resume
-        asyncio.run(cmd_resume())
-
-    elif command in ("-h", "--help", "help"):
-        _print_help()
-
+        from demogorgon.agent.main import AgentMain
+        agent = AgentMain()
+        asyncio.run(agent.start_resume())
     else:
-        # Treat as a target URL or program flag
-        from demogorgon.cli import main as cli_main
-        asyncio.run(cli_main())
+        # Treat as a target URL — launch agent directly
+        target = command
+        from demogorgon.agent.main import AgentMain
+        agent = AgentMain()
+        asyncio.run(agent.start(target=target, interactive=False))
 
 
 def _cmd_setup():
@@ -132,7 +150,7 @@ def _cmd_web(extra_args: list[str]):
     """Start the web control center."""
     try:
         import demogorgon.web
-        demogorgon.web.start(extra_args)
+        demogorgon.web.start(["web"] + extra_args)
     except ImportError:
         from rich.console import Console
         console = Console()
@@ -148,25 +166,23 @@ def _print_help():
     console = Console()
     help_text = """[bold]DEMOGOORGON[/] — Autonomous Security Research Agent
 
-[bold]Commands:[/]
+[bold]Usage:[/]
 
-  python -m demogorgon                Interactive menu
-  python -m demogorgon agent          Launch interactive agent
-  python -m demogorgon agent <url>    Agent with target
-  python -m demogorgon setup          Configure providers and models
-  python -m demogorgon providers      List configured providers
-  python -m demogorgon models [prov]  List available models
-  python -m demogorgon web            Start web control center
-  python -m demogorgon doctor         Run diagnostics
-  python -m demogorgon resume         Resume saved engagement
-  python -m demogorgon <url>          Quick scan a target
+  python -m demogorgon                     Launch interactive agent
+  python -m demogorgon <target>            Hunt a specific target
+  python -m demogorgon --resume            Resume saved session
+  python -m demogorgon --session <id>      Resume specific session
+  python -m demogorgon setup               Configure providers
+  python -m demogorgon providers           List configured providers
+  python -m demogorgon models [provider]   List available models
+  python -m demogorgon web                 Start web control center
+  python -m demogorgon doctor              Run diagnostics
 
 [bold]Examples:[/]
 
+  python -m demogorgon
+  python -m demogorgon https://lab.local
   python -m demogorgon setup
-  python -m demogorgon providers
-  python -m demogorgon models openrouter
-  python -m demogorgon agent https://lab.local
   python -m demogorgon web"""
 
     console.print(Panel(help_text, border_style="blue"))
