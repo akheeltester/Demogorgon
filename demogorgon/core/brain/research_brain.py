@@ -56,11 +56,20 @@ class ResearchBrain:
         engagement_id: str = "",
         tools: list[str] | None = None,
         scope_status: str = "unknown",
+        # Phase 11.1 agent integration
+        event_bus: Any = None,
+        research_memory: Any = None,
+        application_model: Any = None,
     ):
         self.target = target
         self.engagement_id = engagement_id
         self.tools = tools or []
         self.scope_status = scope_status
+
+        # Agent subsystems (optional)
+        self._event_bus = event_bus
+        self._research_memory = research_memory
+        self._application_model = application_model
 
         # Initialize components
         self.reasoner = LLMReasoner(llm_generate)
@@ -315,7 +324,7 @@ class ResearchBrain:
 
     def _build_context(self) -> dict[str, Any]:
         """Build context dict from case state."""
-        return {
+        ctx = {
             "target": self.target,
             "iteration": self._iteration,
             "assets": [],
@@ -326,3 +335,22 @@ class ResearchBrain:
             "available_tools": self.tools,
             "scope_status": self.scope_status,
         }
+
+        # Add research memory context (bounded retrieval)
+        if self._research_memory:
+            memories = self._research_memory.retrieve(
+                query=self.target,
+                limit=8,
+                min_confidence=0.3,
+            )
+            if memories:
+                ctx["research_memory"] = [
+                    {"category": m.category, "content": m.content[:150], "confidence": m.confidence}
+                    for m in memories
+                ]
+
+        # Add application model context
+        if self._application_model and hasattr(self._application_model, 'get_summary'):
+            ctx["application_model"] = self._application_model.get_summary()
+
+        return ctx

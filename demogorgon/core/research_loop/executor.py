@@ -35,6 +35,9 @@ class PlanExecutor(ExperimentExecutor):
         browser: Any = None,
         auth_headers: dict[str, str] | None = None,
         rate_limit_delay: float = 1.0,
+        # Phase 11.1 agent integration
+        capability_registry: Any = None,
+        event_bus: Any = None,
     ):
         self._http = http_client
         self._tools = tool_executor
@@ -42,6 +45,10 @@ class PlanExecutor(ExperimentExecutor):
         self._auth_headers = auth_headers or {}
         self._rate_limit_delay = rate_limit_delay
         self._last_request_time = 0.0
+
+        # Agent subsystems
+        self._capability_registry = capability_registry
+        self._event_bus = event_bus
 
     async def execute(self, plan: dict[str, Any]) -> dict[str, Any]:
         """Execute an experiment plan.

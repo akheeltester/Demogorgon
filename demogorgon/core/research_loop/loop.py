@@ -24,6 +24,13 @@ from .evidence import EvidenceCollector
 logger = logging.getLogger(__name__)
 
 
+def _noop_event_bus():
+    """Return a null event bus that does nothing."""
+    class _NullBus:
+        async def emit(self, *a, **kw): pass
+    return _NullBus()
+
+
 class LoopConfig:
     """Configuration for the research loop."""
 
@@ -75,10 +82,25 @@ class ResearchLoop:
         engagement_id: str = "",
         state_manager: Any = None,
         validation_pipeline: Any = None,
+        # Phase 11.1 agent integration
+        event_bus: Any = None,
+        capability_registry: Any = None,
+        research_memory: Any = None,
+        research_trace: Any = None,
+        strategy_engine: Any = None,
+        application_model: Any = None,
     ):
         self.target = target
         self.config = config or LoopConfig()
         self.workspace_dir = workspace_dir
+
+        # Agent subsystems (optional, backward-compatible)
+        self._event_bus = event_bus or _noop_event_bus()
+        self._capability_registry = capability_registry
+        self._research_memory = research_memory
+        self._research_trace = research_trace
+        self._strategy_engine = strategy_engine
+        self._application_model = application_model
 
         # Lazy import to avoid circular dependency
         from ..brain.research_brain import ResearchBrain
@@ -89,6 +111,9 @@ class ResearchLoop:
             llm_generate=llm_generate,
             engagement_id=engagement_id,
             tools=tools or [],
+            event_bus=event_bus,
+            research_memory=research_memory,
+            application_model=application_model,
         )
 
         # Initialize executor
@@ -98,6 +123,8 @@ class ResearchLoop:
             browser=browser,
             auth_headers=auth_headers,
             rate_limit_delay=self.config.rate_limit_delay,
+            capability_registry=capability_registry,
+            event_bus=event_bus,
         )
 
         # Initialize evidence collector
@@ -152,11 +179,46 @@ class ResearchLoop:
         """Run a single iteration of the research cycle."""
         self._iteration += 1
         self.brain.case.increment_iteration()
+        cycle_id = f"cycle_{self._iteration}_{int(time.time())}"
 
         try:
+            # Emit thinking event
+            await self._event_bus.emit(
+                "agent.thinking", {"cycle": self._iteration}, source="loop"
+            )
+
             # 1. Reason about next action
             decision = await self.brain.reason_next_action()
             logger.info(f"Iteration {self._iteration}: {decision.action.value} on {decision.target}")
+
+            # Emit decision event
+            await self._event_bus.emit(
+                "decision.complete",
+                {
+                    "cycle": self._iteration,
+                    "action": decision.action.value,
+                    "target": decision.target,
+                    "reason": decision.reason,
+                    "confidence": decision.confidence,
+                },
+                source="loop",
+            )
+
+            # Record trace
+            if self._research_trace:
+                from ...agent.trace import TraceEntryType
+                self._research_trace.add(
+                    TraceEntryType.DECISION,
+                    f"{decision.action.value} on {decision.target}: {decision.reason[:80]}",
+                    data={
+                        "action": decision.action.value,
+                        "target": decision.target,
+                        "confidence": decision.confidence,
+                        "cycle_id": cycle_id,
+                    },
+                    iteration=self._iteration,
+                    cycle_id=cycle_id,
+                )
 
             # 2. Check if we should stop
             if decision.action == ActionType.STOP:
@@ -178,6 +240,18 @@ class ResearchLoop:
                     endpoint=decision.target,
                 )
 
+                # Emit hypothesis event
+                await self._event_bus.emit(
+                    "decision.complete",
+                    {
+                        "cycle": self._iteration,
+                        "hypothesis_id": hypothesis.id,
+                        "vuln_class": hypothesis.vuln_class,
+                        "endpoint": hypothesis.endpoint,
+                    },
+                    source="loop",
+                )
+
             # 5. Plan experiment if we have a hypothesis
             plan = None
             if hypothesis:
@@ -194,8 +268,31 @@ class ResearchLoop:
                 )
                 experiment.plan = plan
 
+                # Emit tool execute event
+                await self._event_bus.emit(
+                    "tool.execute",
+                    {
+                        "cycle": self._iteration,
+                        "action": decision.action.value,
+                        "target": decision.target,
+                        "tool": decision.tool_hint or "http",
+                    },
+                    source="loop",
+                )
+
                 # Execute
                 result = await self.executor.execute(plan)
+
+                # Emit tool result event
+                await self._event_bus.emit(
+                    "tool.result",
+                    {
+                        "cycle": self._iteration,
+                        "success": result.get("success", False),
+                        "evidence_count": len(result.get("evidence", [])),
+                    },
+                    source="loop",
+                )
 
                 # Record result
                 experiment.result = result
@@ -213,6 +310,14 @@ class ResearchLoop:
                         data=evidence_item.get("data"),
                     )
 
+                # Emit evidence event
+                if result.get("evidence"):
+                    await self._event_bus.emit(
+                        "evidence.collected",
+                        {"cycle": self._iteration, "count": len(result["evidence"])},
+                        source="loop",
+                    )
+
                 # Add observations to case
                 for obs in result.get("observations", []):
                     self.brain.case.add_observation(
@@ -220,6 +325,10 @@ class ResearchLoop:
                         source="executor",
                         data=obs.get("data"),
                     )
+
+                # Update application model from observations
+                if self._application_model and result.get("observations"):
+                    self._update_app_model(result["observations"])
 
                 # Validate if we have evidence
                 if result.get("evidence"):
@@ -229,12 +338,58 @@ class ResearchLoop:
                     if validation_result.get("is_finding"):
                         self._consecutive_failures = 0
                         self._stagnation_count = 0
+
+                        # Emit finding event
+                        await self._event_bus.emit(
+                            "finding.new",
+                            {
+                                "cycle": self._iteration,
+                                "title": validation_result.get("title", "Untitled"),
+                                "severity": validation_result.get("severity", "unknown"),
+                                "vuln_class": validation_result.get("vuln_class", ""),
+                                "endpoint": validation_result.get("endpoint", ""),
+                            },
+                            source="loop",
+                        )
+
+                        # Record finding in trace
+                        if self._research_trace:
+                            from ...agent.trace import TraceEntryType
+                            self._research_trace.add(
+                                TraceEntryType.FINDING,
+                                validation_result.get("title", "Untitled finding"),
+                                data=validation_result,
+                                iteration=self._iteration,
+                                cycle_id=cycle_id,
+                            )
+
+                        # Store in memory
+                        if self._research_memory:
+                            self._research_memory.store(
+                                key=f"finding_{hypothesis.id}",
+                                category="finding_pattern",
+                                content=validation_result.get("title", ""),
+                                data=validation_result,
+                                confidence=validation_result.get("confidence", 0.5),
+                                source=cycle_id,
+                            )
                     else:
                         self._consecutive_failures += 1
                         self._stagnation_count += 1
                 else:
                     self._consecutive_failures += 1
                     self._stagnation_count += 1
+
+                # Record in trace
+                if self._research_trace:
+                    from ...agent.trace import TraceEntryType
+                    self._research_trace.add(
+                        TraceEntryType.ACTION,
+                        f"{decision.action.value} on {decision.target} -> {'success' if result.get('success') else 'failed'}",
+                        data={"result": result.get("success", False), "evidence": len(result.get("evidence", []))},
+                        iteration=self._iteration,
+                        cycle_id=cycle_id,
+                    )
 
                 # Mark as tested
                 self._tested_endpoints.add(action_key)
@@ -307,26 +462,65 @@ class ResearchLoop:
         if self._consecutive_failures >= self.config.max_consecutive_failures:
             return True, f"Too many consecutive failures ({self._consecutive_failures})"
 
-        if self._stagnation_count >= self.config.stagnation_threshold:
-            # Try to pivot strategy
-            if self._strategy == "explore":
-                self._strategy = "validate"
-                self._stagnation_count = 0
-                logger.info("Pivoting strategy: explore -> validate")
-                return False, ""
-            elif self._strategy == "validate":
-                self._strategy = "exploit"
-                self._stagnation_count = 0
-                logger.info("Pivoting strategy: validate -> exploit")
-                return False, ""
-            else:
-                return True, "Stagnant across all strategies"
+        # Use strategy engine if available, otherwise use built-in pivot logic
+        if self._strategy_engine:
+            from ...agent.strategies import AgentStrategy
+            ctx = {
+                "endpoints_discovered": len(self._tested_endpoints),
+                "findings": len(self.brain.case.findings),
+                "validated_findings": len(self.brain.case.get_confirmed_findings()),
+                "false_positives": 0,
+                "evidence_count": len(self.evidence._evidence),
+                "chains": 0,
+                "consecutive_failures": self._consecutive_failures,
+                "tested_vuln_classes": list(self.brain._tested_vuln_classes.keys()),
+            }
+            state = self._strategy_engine.evaluate(ctx)
+            self._strategy = state.strategy.value
+        else:
+            if self._stagnation_count >= self.config.stagnation_threshold:
+                if self._strategy == "explore":
+                    self._strategy = "validate"
+                    self._stagnation_count = 0
+                    logger.info("Pivoting strategy: explore -> validate")
+                    return False, ""
+                elif self._strategy == "validate":
+                    self._strategy = "exploit"
+                    self._stagnation_count = 0
+                    logger.info("Pivoting strategy: validate -> exploit")
+                    return False, ""
+                else:
+                    return True, "Stagnant across all strategies"
 
         should_stop, reason = self.brain.should_stop()
         if should_stop:
             return True, reason
 
         return False, ""
+
+    def _update_app_model(self, observations: list[dict[str, Any]]) -> None:
+        """Update application model from observations."""
+        if not self._application_model:
+            return
+
+        for obs in observations:
+            desc = obs.get("description", "")
+            data = obs.get("data", {})
+
+            # Extract endpoint info from HTTP responses
+            if "status_code" in data:
+                # This is an HTTP response observation
+                # Update the application model with endpoint info
+                endpoint = data.get("url", "")
+                method = data.get("method", "GET")
+                status = data.get("status_code", 0)
+
+                if hasattr(self._application_model, 'add_observation'):
+                    self._application_model.add_observation(
+                        description=desc,
+                        category="endpoint",
+                        data=data,
+                    )
 
     def _save_checkpoint(self) -> None:
         """Save a checkpoint of the current state."""

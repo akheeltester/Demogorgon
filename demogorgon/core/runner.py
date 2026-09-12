@@ -74,6 +74,13 @@ class AutonomousRunner:
         http_client: Any = None,
         tool_registry: Any = None,
         workspace_dir: str = "",
+        # Phase 11.1 agent integration
+        event_bus: Any = None,
+        capability_registry: Any = None,
+        research_memory: Any = None,
+        research_trace: Any = None,
+        strategy_engine: Any = None,
+        application_model: Any = None,
     ):
         self.engagement = engagement
         self.config = config or RunnerConfig()
@@ -81,6 +88,14 @@ class AutonomousRunner:
         self.http_client = http_client
         self.tool_registry = tool_registry
         self.workspace_dir = workspace_dir or self.config.workspace_dir
+
+        # Agent subsystems (optional, passed through to ResearchLoop)
+        self._event_bus = event_bus
+        self._capability_registry = capability_registry
+        self._research_memory = research_memory
+        self._research_trace = research_trace
+        self._strategy_engine = strategy_engine
+        self._application_model = application_model
 
         if not self.workspace_dir:
             self.workspace_dir = os.path.join(
@@ -342,6 +357,15 @@ class AutonomousRunner:
             config=loop_config,
             workspace_dir=self.workspace_dir,
             engagement_id=self.engagement.id,
+            state_manager=self.state_manager,
+            validation_pipeline=self.validation_pipeline,
+            # Phase 11.1 agent subsystems
+            event_bus=self._event_bus,
+            capability_registry=self._capability_registry,
+            research_memory=self._research_memory,
+            research_trace=self._research_trace,
+            strategy_engine=self._strategy_engine,
+            application_model=self._application_model,
         )
 
         await research_loop.initialize()
