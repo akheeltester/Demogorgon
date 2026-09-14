@@ -183,7 +183,7 @@ async def create_engagement(req: EngagementCreate):
 
     return {
         "status": "created",
-        "session_id": session.target,  # Using target as ID for now
+        "session_id": session.session_id,
         "target": req.target,
         "provider": active.provider,
         "model": active.selected_model,
@@ -608,7 +608,8 @@ def set_terminal_session(session) -> None:
     """
     global _current_session
     _current_session = session
-    _sessions[session.target] = session
+    _sessions[session.session_id] = session
+    _sessions[f"target:{session.target}"] = session
 
     # Wire EventBus to WebSocket bridge
     try:
@@ -621,7 +622,9 @@ def set_terminal_session(session) -> None:
 def _set_current_session(session):
     global _current_session
     _current_session = session
-    _sessions[session.target] = session
+    _sessions[session.session_id] = session
+    # Also store by target for backward compat
+    _sessions[f"target:{session.target}"] = session
 
     # Wire EventBus to WebSocket bridge for real-time updates
     try:
@@ -640,9 +643,21 @@ def _get_all_sessions() -> list:
 
 
 def _get_session_by_id(session_id: str):
+    # Try direct session_id lookup (UUID)
+    if session_id in _sessions:
+        return _sessions[session_id]
+    # Try target lookup
+    target_key = f"target:{session_id}"
+    if target_key in _sessions:
+        return _sessions[target_key]
+    # Try matching by target on current session
     if _current_session and (_current_session.target == session_id or _current_session.session_id == session_id):
         return _current_session
-    return _sessions.get(session_id)
+    # Fallback: search all sessions by target
+    for key, sess in _sessions.items():
+        if hasattr(sess, 'target') and sess.target == session_id:
+            return sess
+    return None
 
 
 async def _run_session(session):
@@ -1072,8 +1087,8 @@ def _new_hunt_html() -> str:
             if (d.session_id) {{
                 // Start the session
                 await fetch(`/api/engagements/${{d.session_id}}/start`, {{method: 'POST'}});
-                // Navigate to dashboard
-                window.location.href = `/hunt/${{encodeURIComponent(d.session_id)}}`;
+                // Navigate to dashboard using session_id
+                window.location.href = `/hunt/${{d.session_id}}`;
             }} else {{
                 alert('Failed: ' + (d.detail || 'Unknown error'));
             }}
@@ -1626,7 +1641,7 @@ def _hunts_html() -> str:
                 const findings = s.findings || 0;
                 const evidence = s.evidence || 0;
                 return `
-                    <div class="hunt-card" onclick="window.location.href='/hunt/${{encodeURIComponent(target)}}'">
+                    <div class="hunt-card" onclick="window.location.href='/hunt/${{s.session_id || encodeURIComponent(target)}}'">
                         <div class="hunt-header">
                             <span class="hunt-target">${{displayTarget}}</span>
                             <span class="badge ${{badge}}" style="color:${{color}};border-color:${{color}}30;background:${{color}}15">${{s.status}}</span>
@@ -1690,7 +1705,7 @@ def _findings_html() -> str:
             let allFindings = [];
             for (const s of d.sessions) {{
                 try {{
-                    const fr = await fetch(`/api/engagements/${{encodeURIComponent(s.target)}}/findings`);
+                    const fr = await fetch(`/api/engagements/${{encodeURIComponent(s.session_id)}}/findings`);
                     const fd = await fr.json();
                     if (fd.findings) {{
                         fd.findings.forEach(f => allFindings.push({{...f, target: s.target}}));
