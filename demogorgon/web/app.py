@@ -277,7 +277,7 @@ async def stop_engagement(engagement_id: str):
     return {"status": "stopped"}
 
 
-@app.post("/api/engagements/resume")
+@app.post("/api/engagements/resume/{target:path}")
 async def resume_saved_session(target: str):
     """Resume a saved session from disk."""
     from ..agent.session import AgentSession
@@ -347,6 +347,143 @@ async def get_trace(engagement_id: str):
             }
             for e in entries
         ]
+    }
+
+
+# ── Scope Management API ──────────────────────────────────────
+
+
+@app.get("/api/engagements/{engagement_id}/scope")
+async def get_scope(engagement_id: str):
+    """Get scope assets for an engagement."""
+    session = _get_session_by_id(engagement_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    return {
+        "in_scope": session.scope_assets,
+        "out_of_scope": session.out_of_scope,
+        "restrictions": session.restrictions,
+    }
+
+
+@app.post("/api/engagements/{engagement_id}/scope")
+async def add_scope(engagement_id: str, req: dict):
+    """Add a scope asset to an engagement."""
+    session = _get_session_by_id(engagement_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+
+    pattern = req.get("pattern", "").strip()
+    asset_type = req.get("asset_type", "url")
+    description = req.get("description", "")
+
+    if not pattern:
+        raise HTTPException(status_code=400, detail="Pattern is required")
+
+    asset = {"pattern": pattern, "asset_type": asset_type, "description": description}
+    session.scope_assets.append(asset)
+
+    await session.events.emit(
+        EventType.LOG,
+        {"message": f"Scope added: {pattern} ({asset_type})"},
+        source="web",
+    )
+
+    return {"status": "added", "asset": asset, "total": len(session.scope_assets)}
+
+
+@app.delete("/api/engagements/{engagement_id}/scope/{pattern:path}")
+async def remove_scope(engagement_id: str, pattern: str):
+    """Remove a scope asset from an engagement."""
+    session = _get_session_by_id(engagement_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+
+    before = len(session.scope_assets)
+    session.scope_assets = [a for a in session.scope_assets if a.get("pattern") != pattern]
+    removed = before - len(session.scope_assets)
+
+    if removed:
+        await session.events.emit(
+            EventType.LOG,
+            {"message": f"Scope removed: {pattern}"},
+            source="web",
+        )
+
+    return {"status": "removed" if removed else "not_found", "total": len(session.scope_assets)}
+
+
+# ── Findings Detail API ───────────────────────────────────────
+
+
+@app.get("/api/engagements/{engagement_id}/findings/{finding_idx:int}")
+async def get_finding_detail(engagement_id: str, finding_idx: int):
+    """Get a specific finding by index."""
+    session = _get_session_by_id(engagement_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    if finding_idx < 0 or finding_idx >= len(session.findings):
+        raise HTTPException(status_code=404, detail="Finding not found")
+    return {"finding": session.findings[finding_idx], "index": finding_idx}
+
+
+# ── Evidence Detail API ───────────────────────────────────────
+
+
+@app.get("/api/engagements/{engagement_id}/evidence/{evidence_idx:int}")
+async def get_evidence_detail(engagement_id: str, evidence_idx: int):
+    """Get a specific evidence pack by index."""
+    session = _get_session_by_id(engagement_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    # Evidence is stored on disk in workspace
+    if not session.workspace_dir:
+        raise HTTPException(status_code=404, detail="No workspace")
+    evidence_dir = os.path.join(session.workspace_dir, "evidence")
+    if not os.path.exists(evidence_dir):
+        return {"evidence": None}
+    files = sorted(os.listdir(evidence_dir))
+    if evidence_idx < 0 or evidence_idx >= len(files):
+        raise HTTPException(status_code=404, detail="Evidence not found")
+    filepath = os.path.join(evidence_dir, files[evidence_idx])
+    try:
+        import json
+        content = json.loads(Path(filepath).read_text())
+    except Exception:
+        content = {"file": files[evidence_idx]}
+    return {"evidence": content, "filename": files[evidence_idx]}
+
+
+# ── Session Summary API ───────────────────────────────────────
+
+
+@app.get("/api/engagements/{engagement_id}/summary")
+async def get_session_summary(engagement_id: str):
+    """Get a full session summary with stats."""
+    session = _get_session_by_id(engagement_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+
+    duration = time.time() - session.start_time if session.start_time else 0
+    sev_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0}
+    for f in session.findings:
+        sev = f.get("severity", "info").lower()
+        sev_counts[sev] = sev_counts.get(sev, 0) + 1
+
+    return {
+        "target": session.target,
+        "session_id": session.session_id,
+        "status": session.status.value,
+        "strategy": session.strategy.state.strategy.value if hasattr(session.strategy, "state") else "unknown",
+        "duration_seconds": duration,
+        "total_cycles": session.strategy.state.total_cycles if hasattr(session.strategy, "state") else 0,
+        "findings_total": len(session.findings),
+        "findings_by_severity": sev_counts,
+        "evidence_count": session.evidence_count,
+        "chains": len(session.chains),
+        "scope_count": len(session.scope_assets),
+        "budget": session.budget.get_usage_display(),
+        "tokens": session.token_tracker.live_display,
     }
 
 
@@ -452,6 +589,12 @@ async def findings_page():
     return HTMLResponse(content=_findings_html(), status_code=200)
 
 
+@app.get("/hunts", response_class=HTMLResponse)
+async def hunts_page():
+    """Hunts dashboard — list all hunts with status and progress."""
+    return HTMLResponse(content=_hunts_html(), status_code=200)
+
+
 # ── Internal State ──────────────────────────────────────────────
 
 _current_session = None
@@ -479,6 +622,13 @@ def _set_current_session(session):
     global _current_session
     _current_session = session
     _sessions[session.target] = session
+
+    # Wire EventBus to WebSocket bridge for real-time updates
+    try:
+        bridge = get_web_bridge()
+        session.events.on_all(bridge.handle_event)
+    except Exception as e:
+        logger.warning(f"Could not wire EventBus to WebSocket bridge: {e}")
 
 
 def _get_all_sessions() -> list:
@@ -567,6 +717,7 @@ def _setup_html() -> str:
         <h1>DEMOGOORGON</h1>
         <nav>
             <a href="/setup" class="active">Setup</a>
+            <a href="/hunts">Hunts</a>
             <a href="/new-hunt">New Hunt</a>
             <a href="/hunt">Dashboard</a>
             <a href="/findings">Findings</a>
@@ -779,6 +930,7 @@ def _new_hunt_html() -> str:
         <h1>DEMOGOORGON</h1>
         <nav>
             <a href="/setup">Setup</a>
+            <a href="/hunts">Hunts</a>
             <a href="/new-hunt" class="active">New Hunt</a>
             <a href="/hunt">Dashboard</a>
             <a href="/findings">Findings</a>
@@ -942,7 +1094,7 @@ def _hunt_html(session_id: str = "") -> str:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>DEMOGOORGON — Research Dashboard</title>
     <style>{_SHARED_CSS}
-        .container {{ display: grid; grid-template-columns: 280px 1fr 300px; gap: 16px; padding: 16px; height: calc(100vh - 56px); }}
+        .container {{ display: grid; grid-template-columns: 280px 1fr 320px; gap: 16px; padding: 16px; height: calc(100vh - 56px); }}
         .sidebar {{ overflow-y: auto; }}
         .main {{ overflow-y: auto; }}
         .right {{ overflow-y: auto; }}
@@ -952,17 +1104,35 @@ def _hunt_html(session_id: str = "") -> str:
         .event.action {{ border-color: #00d4ff; background: #0a0a1a; }}
         .event.error {{ border-color: #ef4444; background: #1a0a0a; }}
         .event.tool {{ border-color: #a855f7; background: #0f0a1a; }}
+        .event.log {{ border-color: #888; background: #12121a; }}
         .event .time {{ color: #555; }}
         .event .type {{ color: #00d4ff; font-weight: bold; }}
-        .findings-list .finding-item {{ padding: 8px 12px; border-left: 3px solid #4ade80; margin-bottom: 4px; background: #0a1a0a; font-size: 12px; }}
+        .findings-list .finding-item {{ padding: 8px 12px; border-left: 3px solid #4ade80; margin-bottom: 4px; background: #0a1a0a; font-size: 12px; cursor: pointer; transition: background 0.2s; }}
+        .findings-list .finding-item:hover {{ background: #0f1f0f; }}
         .findings-list .finding-item .sev {{ font-weight: bold; }}
         .findings-list .finding-item .sev.critical {{ color: #ef4444; }}
         .findings-list .finding-item .sev.high {{ color: #f97316; }}
         .findings-list .finding-item .sev.medium {{ color: #eab308; }}
         .findings-list .finding-item .sev.low {{ color: #60a5fa; }}
         .scope-list {{ font-size: 12px; }}
-        .scope-list .in-scope {{ color: #4ade80; }}
-        .scope-list .out-scope {{ color: #ef4444; }}
+        .scope-list .scope-item {{ display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-bottom: 1px solid #1a1a2e; }}
+        .scope-list .scope-item .pattern {{ color: #4ade80; word-break: break-all; }}
+        .scope-list .scope-item .type {{ color: #888; font-size: 11px; }}
+        .scope-list .scope-item .remove {{ color: #ef4444; cursor: pointer; font-size: 11px; }}
+        .scope-list .scope-item .remove:hover {{ text-decoration: underline; }}
+        .scope-add {{ display: flex; gap: 4px; margin-top: 8px; }}
+        .scope-add input {{ flex: 1; padding: 6px 8px; font-size: 11px; }}
+        .scope-add select {{ width: 80px; padding: 6px 8px; font-size: 11px; }}
+        .instruction-box {{ display: flex; gap: 4px; margin-top: 8px; }}
+        .instruction-box input {{ flex: 1; }}
+        .detail-modal {{ display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; justify-content: center; align-items: center; }}
+        .detail-modal.show {{ display: flex; }}
+        .detail-content {{ background: #12121a; border: 1px solid #1a1a2e; border-radius: 8px; padding: 24px; max-width: 700px; width: 90%; max-height: 80vh; overflow-y: auto; }}
+        .detail-content h3 {{ color: #00d4ff; margin-bottom: 12px; }}
+        .detail-content .field {{ margin-bottom: 8px; }}
+        .detail-content .field .label {{ color: #888; font-size: 11px; text-transform: uppercase; }}
+        .detail-content .field .val {{ color: #e0e0e0; font-size: 13px; margin-top: 2px; }}
+        .detail-content pre {{ background: #0a0a0f; padding: 12px; border-radius: 4px; font-size: 12px; overflow-x: auto; color: #ccc; }}
         @media (max-width: 1024px) {{ .container {{ grid-template-columns: 1fr; }} }}
     </style>
 </head>
@@ -971,6 +1141,7 @@ def _hunt_html(session_id: str = "") -> str:
         <h1>DEMOGOORGON</h1>
         <nav>
             <a href="/setup">Setup</a>
+            <a href="/hunts">Hunts</a>
             <a href="/new-hunt">New Hunt</a>
             <a href="/hunt" class="active">Dashboard</a>
             <a href="/findings">Findings</a>
@@ -981,7 +1152,7 @@ def _hunt_html(session_id: str = "") -> str:
         <div class="sidebar">
             <div class="panel">
                 <h3>Session</h3>
-                <div class="stat"><span class="label">Target</span><span class="value" id="target">—</span></div>
+                <div class="stat"><span class="label">Target</span><span class="value" id="target" style="font-size:11px;word-break:break-all">—</span></div>
                 <div class="stat"><span class="label">Provider</span><span class="value" id="provider">—</span></div>
                 <div class="stat"><span class="label">Model</span><span class="value" id="model">—</span></div>
                 <div class="stat"><span class="label">Status</span><span class="value" id="status">—</span></div>
@@ -990,8 +1161,11 @@ def _hunt_html(session_id: str = "") -> str:
             <div class="panel">
                 <h3>Budget</h3>
                 <div class="stat"><span class="label">Cycles</span><span class="value" id="cycles">0</span></div>
-                <div class="stat"><span class="label">Findings</span><span class="value" id="findings-count">0</span></div>
-                <div class="stat"><span class="label">Evidence</span><span class="value" id="evidence-count">0</span></div>
+                <div class="stat"><span class="label">Cost</span><span class="value" id="cost">$0.00</span></div>
+                <div class="stat"><span class="label">Requests</span><span class="value" id="requests">0</span></div>
+                <div class="stat"><span class="label">Tokens</span><span class="value" id="tokens">0</span></div>
+                <div class="stat"><span class="label">Findings</span><span class="value" id="findings-count" style="color:#4ade80">0</span></div>
+                <div class="stat"><span class="label">Evidence</span><span class="value" id="evidence-count" style="color:#a855f7">0</span></div>
             </div>
             <div class="panel">
                 <h3>Controls</h3>
@@ -1000,8 +1174,25 @@ def _hunt_html(session_id: str = "") -> str:
                 <button class="btn danger" onclick="stopSession()" style="width:100%">■ Stop</button>
             </div>
             <div class="panel">
-                <h3>Scope</h3>
+                <h3>Scope <span id="scope-count" style="color:#888;font-size:11px">(0)</span></h3>
                 <div id="scope-list" class="scope-list"><div class="empty">No scope loaded</div></div>
+                <div class="scope-add">
+                    <input type="text" id="scope-pattern" class="input" placeholder="pattern" style="padding:6px 8px;font-size:11px">
+                    <select id="scope-type" class="input" style="width:80px;padding:6px 8px;font-size:11px">
+                        <option value="url">URL</option>
+                        <option value="domain">Domain</option>
+                        <option value="wildcard">Wildcard</option>
+                        <option value="cidr">CIDR</option>
+                    </select>
+                    <button class="btn" onclick="addScope()" style="padding:6px 10px;font-size:11px">+</button>
+                </div>
+            </div>
+            <div class="panel">
+                <h3>Send Instruction</h3>
+                <div class="instruction-box">
+                    <input type="text" id="instruction-input" class="input" placeholder="e.g. focus on XSS on /api" style="padding:6px 8px;font-size:11px">
+                    <button class="btn" onclick="sendInstruction()" style="padding:6px 10px;font-size:11px">→</button>
+                </div>
             </div>
         </div>
         <div class="main">
@@ -1014,7 +1205,7 @@ def _hunt_html(session_id: str = "") -> str:
         </div>
         <div class="right">
             <div class="panel">
-                <h3>Findings</h3>
+                <h3>Findings <span id="findings-badge" style="color:#888;font-size:11px"></span></h3>
                 <div id="findings-list" class="findings-list"><div class="empty">No findings yet</div></div>
             </div>
             <div class="panel">
@@ -1027,6 +1218,18 @@ def _hunt_html(session_id: str = "") -> str:
             </div>
         </div>
     </div>
+
+    <!-- Finding Detail Modal -->
+    <div class="detail-modal" id="finding-modal" onclick="if(event.target===this)this.classList.remove('show')">
+        <div class="detail-content">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+                <h3 id="modal-title" style="margin:0">Finding Detail</h3>
+                <button class="btn" onclick="document.getElementById('finding-modal').classList.remove('show')" style="padding:4px 12px">✕</button>
+            </div>
+            <div id="modal-body"></div>
+        </div>
+    </div>
+
     <script>
         const sessionId = '{session_id}';
         const ws = new WebSocket(`ws://${{location.host}}/ws/events`);
@@ -1055,12 +1258,14 @@ def _hunt_html(session_id: str = "") -> str:
             div.className = 'event';
             const time = new Date(event.timestamp * 1000).toLocaleTimeString();
             const type = event.type || 'unknown';
-            const data = JSON.stringify(event.data || {{}});
-            if (type.includes('finding')) div.className += ' finding';
-            else if (type.includes('tool')) div.className += ' tool';
-            else if (type.includes('error')) div.className += ' error';
-            else if (type.includes('action') || type.includes('decision')) div.className += ' action';
-            div.innerHTML = `<span class="time">${{time}}</span> <span class="type">${{type}}</span> ${{data.substring(0, 150)}}`;
+            const data = event.data || {{}};
+            let msg = '';
+            if (type.includes('finding')) {{ div.className += ' finding'; msg = data.title || data.description || JSON.stringify(data).substring(0,120); }}
+            else if (type.includes('tool')) {{ div.className += ' tool'; msg = (data.tool||'') + ' ' + (data.target||data.command||'').substring(0,80); }}
+            else if (type.includes('error')) {{ div.className += ' error'; msg = data.error || data.message || JSON.stringify(data).substring(0,120); }}
+            else if (type.includes('action') || type.includes('decision')) {{ div.className += ' action'; msg = data.action || data.content || JSON.stringify(data).substring(0,120); }}
+            else {{ div.className += ' log'; msg = data.message || data.content || JSON.stringify(data).substring(0,120); }}
+            div.innerHTML = `<span class="time">${{time}}</span> <span class="type">${{type}}</span> ${{msg.substring(0,150)}}`;
             eventsDiv.appendChild(div);
             eventsDiv.scrollTop = eventsDiv.scrollHeight;
         }}
@@ -1073,6 +1278,11 @@ def _hunt_html(session_id: str = "") -> str:
             if (type === 'progress_update') {{
                 document.getElementById('cycles').textContent = data.cycle || '0';
                 document.getElementById('findings-count').textContent = data.findings || '0';
+                if (data.budget) {{
+                    document.getElementById('cost').textContent = '$' + (data.budget.cost_usd || 0).toFixed(2);
+                    document.getElementById('requests').textContent = data.budget.requests || 0;
+                }}
+                if (data.tokens) document.getElementById('tokens').textContent = data.tokens.total || 0;
             }}
             if (type === 'finding') loadFindings();
         }}
@@ -1080,7 +1290,6 @@ def _hunt_html(session_id: str = "") -> str:
         async function loadSession() {{
             const id = sessionId || '';
             if (!id) {{
-                // Load most recent
                 const r = await fetch('/api/engagements');
                 const d = await r.json();
                 if (d.sessions.length) {{
@@ -1108,6 +1317,84 @@ def _hunt_html(session_id: str = "") -> str:
             document.getElementById('evidence-count').textContent = s.evidence || '0';
         }}
 
+        async function loadSummary() {{
+            const id = sessionId || document.getElementById('target').textContent;
+            if (!id || id === '—') return;
+            try {{
+                const r = await fetch(`/api/engagements/${{encodeURIComponent(id)}}/summary`);
+                if (!r.ok) return;
+                const d = await r.json();
+                if (d.budget) {{
+                    document.getElementById('cost').textContent = '$' + (d.budget.cost_usd || 0).toFixed(2);
+                    document.getElementById('requests').textContent = d.budget.requests || 0;
+                }}
+                if (d.tokens) document.getElementById('tokens').textContent = d.tokens.total || 0;
+                document.getElementById('cycles').textContent = d.total_cycles || 0;
+            }} catch(e) {{}}
+        }}
+
+        async function loadScope() {{
+            const id = sessionId || document.getElementById('target').textContent;
+            if (!id || id === '—') return;
+            try {{
+                const r = await fetch(`/api/engagements/${{encodeURIComponent(id)}}/scope`);
+                if (!r.ok) return;
+                const d = await r.json();
+                const el = document.getElementById('scope-list');
+                const count = (d.in_scope || []).length;
+                document.getElementById('scope-count').textContent = `(${{count}})`;
+                if (!count) {{
+                    el.innerHTML = '<div class="empty">No scope loaded</div>';
+                    return;
+                }}
+                el.innerHTML = d.in_scope.map((a, i) => `
+                    <div class="scope-item">
+                        <div>
+                            <div class="pattern">${{a.pattern}}</div>
+                            <div class="type">${{a.asset_type || 'url'}}</div>
+                        </div>
+                        <span class="remove" onclick="removeScope('${{a.pattern}}')">✕</span>
+                    </div>
+                `).join('');
+            }} catch(e) {{}}
+        }}
+
+        async function addScope() {{
+            const id = sessionId || document.getElementById('target').textContent;
+            if (!id || id === '—') return;
+            const pattern = document.getElementById('scope-pattern').value.trim();
+            if (!pattern) return;
+            const asset_type = document.getElementById('scope-type').value;
+            await fetch(`/api/engagements/${{encodeURIComponent(id)}}/scope`, {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{pattern, asset_type}})
+            }});
+            document.getElementById('scope-pattern').value = '';
+            loadScope();
+        }}
+
+        async function removeScope(pattern) {{
+            const id = sessionId || document.getElementById('target').textContent;
+            if (!id || id === '—') return;
+            await fetch(`/api/engagements/${{encodeURIComponent(id)}}/scope/${{encodeURIComponent(pattern)}}`, {{method: 'DELETE'}});
+            loadScope();
+        }}
+
+        async function sendInstruction() {{
+            const id = sessionId || document.getElementById('target').textContent;
+            if (!id || id === '—') return;
+            const input = document.getElementById('instruction-input');
+            const instruction = input.value.trim();
+            if (!instruction) return;
+            await fetch(`/api/engagements/${{encodeURIComponent(id)}}/instructions`, {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{instruction}})
+            }});
+            input.value = '';
+        }}
+
         async function loadFindings() {{
             const id = sessionId || document.getElementById('target').textContent;
             if (!id || id === '—') return;
@@ -1115,14 +1402,38 @@ def _hunt_html(session_id: str = "") -> str:
                 const r = await fetch(`/api/engagements/${{encodeURIComponent(id)}}/findings`);
                 const d = await r.json();
                 const el = document.getElementById('findings-list');
+                document.getElementById('findings-badge').textContent = d.findings ? `(${{d.findings.length}})` : '';
                 if (!d.findings || !d.findings.length) {{
                     el.innerHTML = '<div class="empty">No findings yet</div>';
                     return;
                 }}
-                el.innerHTML = d.findings.map(f => {{
+                el.innerHTML = d.findings.map((f, i) => {{
                     const sev = f.severity || '?';
-                    return `<div class="finding-item"><span class="sev ${{sev}}">${{sev.toUpperCase()}}</span> ${{f.title || f.description || 'Untitled'}}</div>`;
+                    return `<div class="finding-item" onclick="showFindingDetail(${{i}})"><span class="sev ${{sev}}">${{sev.toUpperCase()}}</span> ${{f.title || f.description || 'Untitled'}}</div>`;
                 }}).join('');
+            }} catch(e) {{}}
+        }}
+
+        async function showFindingDetail(idx) {{
+            const id = sessionId || document.getElementById('target').textContent;
+            if (!id || id === '—') return;
+            try {{
+                const r = await fetch(`/api/engagements/${{encodeURIComponent(id)}}/findings/${{idx}}`);
+                const d = await r.json();
+                const f = d.finding;
+                const modal = document.getElementById('finding-modal');
+                document.getElementById('modal-title').textContent = f.title || 'Finding';
+                let html = '';
+                html += `<div class="field"><div class="label">Severity</div><div class="val"><span class="badge ${{f.severity === 'critical' ? 'red' : f.severity === 'high' ? 'yellow' : 'blue'}}">${{(f.severity||'?').toUpperCase()}}</span></div></div>`;
+                if (f.vuln_class) html += `<div class="field"><div class="label">Vulnerability Class</div><div class="val">${{f.vuln_class}}</div></div>`;
+                if (f.endpoint) html += `<div class="field"><div class="label">Endpoint</div><div class="val" style="color:#00d4ff">${{f.endpoint}}</div></div>`;
+                if (f.description) html += `<div class="field"><div class="label">Description</div><div class="val">${{f.description}}</div></div>`;
+                if (f.impact) html += `<div class="field"><div class="label">Impact</div><div class="val">${{f.impact}}</div></div>`;
+                if (f.steps && f.steps.length) html += `<div class="field"><div class="label">Reproduction Steps</div><div class="val">${{f.steps.map((s,i) => `${{i+1}}. ${{s}}`).join('<br>')}}</div></div>`;
+                if (f.evidence) html += `<div class="field"><div class="label">Evidence</div><pre>${{typeof f.evidence === 'string' ? f.evidence : JSON.stringify(f.evidence, null, 2)}}</pre></div>`;
+                if (f.raw) html += `<div class="field"><div class="label">Raw Data</div><pre>${{JSON.stringify(f.raw, null, 2)}}</pre></div>`;
+                document.getElementById('modal-body').innerHTML = html;
+                modal.classList.add('show');
             }} catch(e) {{}}
         }}
 
@@ -1137,7 +1448,7 @@ def _hunt_html(session_id: str = "") -> str:
                     el.innerHTML = '<div class="empty">No trace entries</div>';
                     return;
                 }}
-                el.innerHTML = d.trace.slice(0, 10).map(e => {{
+                el.innerHTML = d.trace.slice(0, 15).map(e => {{
                     const ts = new Date(e.timestamp * 1000).toLocaleTimeString();
                     return `<div style="padding:3px 0;border-bottom:1px solid #1a1a2e"><span style="color:#555">${{ts}}</span> <span style="color:#00d4ff">${{e.type}}</span> ${{e.content.substring(0, 60)}}</div>`;
                 }}).join('');
@@ -1179,11 +1490,162 @@ def _hunt_html(session_id: str = "") -> str:
             document.getElementById('status').textContent = 'STOPPED';
         }}
 
+        // Handle Enter key on inputs
+        document.getElementById('scope-pattern').addEventListener('keydown', e => {{ if(e.key==='Enter') addScope(); }});
+        document.getElementById('instruction-input').addEventListener('keydown', e => {{ if(e.key==='Enter') sendInstruction(); }});
+
         loadSession();
+        loadSummary();
+        loadScope();
         loadFindings();
         loadTrace();
         loadTools();
-        setInterval(() => {{ loadFindings(); loadTrace(); }}, 5000);
+        setInterval(() => {{ loadFindings(); loadTrace(); loadSummary(); loadScope(); }}, 5000);
+    </script>
+</body>
+</html>"""
+
+
+def _hunts_html() -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DEMOGOORGON — Hunts</title>
+    <style>{_SHARED_CSS}
+        .hunt-card {{ background: #12121a; border: 1px solid #1a1a2e; border-radius: 8px; padding: 16px; margin-bottom: 12px; cursor: pointer; transition: border-color 0.2s; }}
+        .hunt-card:hover {{ border-color: #00d4ff; }}
+        .hunt-card .hunt-header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }}
+        .hunt-card .hunt-target {{ color: #00d4ff; font-size: 15px; font-weight: bold; }}
+        .hunt-card .hunt-meta {{ display: flex; gap: 16px; font-size: 12px; color: #888; margin-top: 8px; }}
+        .hunt-card .hunt-stats {{ display: flex; gap: 12px; margin-top: 10px; }}
+        .hunt-card .stat-pill {{ background: #0a0a1a; border: 1px solid #1a1a2e; border-radius: 4px; padding: 4px 10px; font-size: 11px; }}
+        .stat-pill .num {{ color: #00d4ff; font-weight: bold; }}
+        .stat-pill.findings .num {{ color: #4ade80; }}
+        .stat-pill.evidence .num {{ color: #a855f7; }}
+        .summary-bar {{ display: flex; gap: 24px; margin-bottom: 20px; }}
+        .summary-item {{ text-align: center; }}
+        .summary-item .big {{ font-size: 28px; font-weight: bold; color: #00d4ff; }}
+        .summary-item .lbl {{ font-size: 11px; color: #888; text-transform: uppercase; }}
+        .filter-bar {{ display: flex; gap: 8px; margin-bottom: 16px; }}
+        .filter-btn {{ background: #0a0a1a; color: #888; border: 1px solid #1a1a2e; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-family: inherit; font-size: 12px; }}
+        .filter-btn.active {{ color: #00d4ff; border-color: #00d4ff; background: #0a0a1a; }}
+        .filter-btn:hover {{ border-color: #00d4ff; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>DEMOGOORGON</h1>
+        <nav>
+            <a href="/setup">Setup</a>
+            <a href="/hunts" class="active">Hunts</a>
+            <a href="/new-hunt">New Hunt</a>
+            <a href="/hunt">Dashboard</a>
+            <a href="/findings">Findings</a>
+        </nav>
+        <div class="status" id="ws-status">● CONNECTING</div>
+    </div>
+    <div class="container">
+        <div class="summary-bar" id="summary-bar">
+            <div class="summary-item"><div class="big" id="total-hunts">0</div><div class="lbl">Total Hunts</div></div>
+            <div class="summary-item"><div class="big" id="active-hunts" style="color:#4ade80">0</div><div class="lbl">Active</div></div>
+            <div class="summary-item"><div class="big" id="paused-hunts" style="color:#eab308">0</div><div class="lbl">Paused</div></div>
+            <div class="summary-item"><div class="big" id="completed-hunts" style="color:#60a5fa">0</div><div class="lbl">Completed</div></div>
+            <div class="summary-item"><div class="big" id="total-findings" style="color:#a855f7">0</div><div class="lbl">Total Findings</div></div>
+        </div>
+        <div class="filter-bar">
+            <button class="filter-btn active" onclick="filterHunts('all')">All</button>
+            <button class="filter-btn" onclick="filterHunts('running')">Running</button>
+            <button class="filter-btn" onclick="filterHunts('paused')">Paused</button>
+            <button class="filter-btn" onclick="filterHunts('completed')">Completed</button>
+            <button class="filter-btn" onclick="filterHunts('stopped')">Stopped</button>
+            <div style="flex:1"></div>
+            <a href="/new-hunt" class="btn primary" style="font-size:12px;padding:6px 16px">+ New Hunt</a>
+        </div>
+        <div id="hunts-list">
+            <div class="empty">Loading hunts...</div>
+        </div>
+    </div>
+    <script>
+        const ws = new WebSocket(`ws://${{location.host}}/ws/events`);
+        ws.onopen = () => {{
+            document.getElementById('ws-status').textContent = '● CONNECTED';
+            document.getElementById('ws-status').style.color = '#4ade80';
+        }};
+        ws.onclose = () => {{
+            document.getElementById('ws-status').textContent = '● OFFLINE';
+            document.getElementById('ws-status').style.color = '#ef4444';
+        }};
+        ws.onmessage = () => {{ loadHunts(); }};
+
+        let allHunts = [];
+
+        async function loadHunts() {{
+            try {{
+                const r = await fetch('/api/engagements');
+                const d = await r.json();
+                allHunts = d.sessions || [];
+                updateSummary();
+                filterHunts(currentFilter);
+            }} catch(e) {{
+                document.getElementById('hunts-list').innerHTML = '<div class="empty">Failed to load hunts</div>';
+            }}
+        }}
+
+        function updateSummary() {{
+            document.getElementById('total-hunts').textContent = allHunts.length;
+            document.getElementById('active-hunts').textContent = allHunts.filter(s => s.status === 'running').length;
+            document.getElementById('paused-hunts').textContent = allHunts.filter(s => s.status === 'paused').length;
+            document.getElementById('completed-hunts').textContent = allHunts.filter(s => s.status === 'completed' || s.status === 'stopped').length;
+            document.getElementById('total-findings').textContent = allHunts.reduce((a, s) => a + (s.findings || 0), 0);
+        }}
+
+        let currentFilter = 'all';
+        function filterHunts(filter) {{
+            currentFilter = filter;
+            document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+            event.target.classList.add('active');
+            const filtered = filter === 'all' ? allHunts : allHunts.filter(s => s.status === filter);
+            renderHunts(filtered);
+        }}
+
+        function renderHunts(hunts) {{
+            const el = document.getElementById('hunts-list');
+            if (!hunts.length) {{
+                el.innerHTML = '<div class="empty">No hunts found. <a href="/new-hunt">Start one →</a></div>';
+                return;
+            }}
+            el.innerHTML = hunts.map(s => {{
+                const statusColors = {{running:'#4ade80',paused:'#eab308',completed:'#60a5fa',stopped:'#888',error:'#ef4444',initializing:'#888',ready:'#888'}};
+                const color = statusColors[s.status] || '#888';
+                const badge = s.active ? 'green' : 'blue';
+                const target = s.target || 'Unknown';
+                const displayTarget = target.replace(/^https?:\\/\\//, '').substring(0, 50);
+                const strategy = s.strategy || '—';
+                const findings = s.findings || 0;
+                const evidence = s.evidence || 0;
+                return `
+                    <div class="hunt-card" onclick="window.location.href='/hunt/${{encodeURIComponent(target)}}'">
+                        <div class="hunt-header">
+                            <span class="hunt-target">${{displayTarget}}</span>
+                            <span class="badge ${{badge}}" style="color:${{color}};border-color:${{color}}30;background:${{color}}15">${{s.status}}</span>
+                        </div>
+                        <div class="hunt-meta">
+                            <span>Strategy: ${{strategy}}</span>
+                            ${{s.session_id ? '<span>ID: ' + s.session_id + '</span>' : ''}}
+                            ${{s.active ? '<span style="color:#4ade80">● LIVE</span>' : '<span style="color:#888">○ SAVED</span>'}}
+                        </div>
+                        <div class="hunt-stats">
+                            <div class="stat-pill findings"><span class="num">${{findings}}</span> findings</div>
+                            <div class="stat-pill evidence"><span class="num">${{evidence}}</span> evidence</div>
+                        </div>
+                    </div>
+                }}).join('');
+        }}
+
+        loadHunts();
+        setInterval(loadHunts, 5000);
     </script>
 </body>
 </html>"""
@@ -1208,6 +1670,7 @@ def _findings_html() -> str:
         <h1>DEMOGOORGON</h1>
         <nav>
             <a href="/setup">Setup</a>
+            <a href="/hunts">Hunts</a>
             <a href="/new-hunt">New Hunt</a>
             <a href="/hunt">Dashboard</a>
             <a href="/findings" class="active">Findings</a>
