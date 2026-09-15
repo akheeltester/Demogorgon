@@ -24,7 +24,6 @@ from demogorgon.app_model import (
 )
 from demogorgon.memory import Memory, Finding, Hypothesis, Severity
 from demogorgon.reasoning_trace import ReasoningTrace
-from demogorgon.evidence_validator import EvidenceValidator
 from demogorgon.controller.self_evaluator import SelfEvaluator
 
 console = Console()
@@ -131,7 +130,6 @@ class ResearchLoop:
         self.app_model = ApplicationModel(target_url)
         self.memory = Memory(target_url)
         self.reasoning = ReasoningTrace()
-        self.evidence_validator = EvidenceValidator()
         self.evaluator = SelfEvaluator()
         self.state = LoopState()
 
@@ -154,6 +152,13 @@ class ResearchLoop:
         self.trust_mapper = TrustBoundaryMapper()
         self.attack_graph = AttackGraph()
         self.confidence_engine = ExploitConfidenceEngine()
+
+        # Authcore components for IDOR and role testing
+        from demogorgon.auth.authcore import ObjectInventoryDB, CrossUserIDORTester, RoleTester
+        self.inventory = ObjectInventoryDB()
+        self.idor_tester = CrossUserIDORTester(self.inventory)
+        self.role_tester = RoleTester(self.inventory)
+        self._idor_discovery_done = False
 
         # Finding scores — tracks all scored findings for report
         self._finding_scores: list[dict[str, Any]] = []
@@ -241,6 +246,32 @@ class ResearchLoop:
         api_endpoints = await self.browser.extract_api_from_network_entries()
         form_endpoints = await self.browser.extract_form_endpoints()
 
+        # Extract Next.js data and discover admin paths
+        try:
+            next_data = await self.browser.extract_next_data()
+            if next_data and next_data.get("routes"):
+                for route in next_data["routes"]:
+                    if route.startswith("http"):
+                        full_url = route
+                    else:
+                        full_url = f"{self.target_url.rstrip('/')}/{route.lstrip('/')}"
+                    if self._in_scope(full_url):
+                        self.memory.add_endpoint(full_url)
+        except Exception:
+            pass
+
+        # Discover and parse OpenAPI/Swagger specs
+        await self._discover_openapi_specs()
+
+        try:
+            admin_paths = await self.browser.discover_admin_paths(self.target_url)
+            for ap in admin_paths:
+                path_url = ap.get("final_url") or f"{self.target_url.rstrip('/')}{ap['path']}"
+                if self._in_scope(path_url):
+                    self.memory.add_endpoint(path_url)
+        except Exception:
+            pass
+
         # Register all discovered endpoints
         for link in links:
             if self._in_scope(link):
@@ -311,6 +342,177 @@ class ResearchLoop:
 
         console.print(f"[green]Discovered {len(self.memory.endpoints)} endpoints[/green]")
         console.print(f"[green]Found {len(forms)} forms, {len(tokens.jwt_tokens)} JWT tokens[/green]")
+
+        # Run IDOR object discovery if we have multiple auth sessions
+        await self._discover_idor_objects()
+
+    async def _discover_idor_objects(self):
+        """Discover objects for IDOR testing using authcore."""
+        if self._idor_discovery_done:
+            return
+        self._idor_discovery_done = True
+
+        sessions = list(self.auth.sessions.values())
+        if len(sessions) < 2:
+            return
+
+        console.print(f"[cyan]Running IDOR object discovery with {len(sessions)} sessions...[/cyan]")
+        try:
+            endpoint_urls = list(self.memory.endpoints.keys())
+            for session in sessions[:3]:  # Limit to 3 sessions for discovery
+                count = await self.idor_tester.discover_objects(
+                    endpoints=endpoint_urls,
+                    session=session,
+                    max_pages=10,
+                )
+                if count:
+                    console.print(f"[green]Discovered {count} objects via session '{session.label}'[/green]")
+
+            # Report IDOR candidates
+            candidates = self.inventory.get_idor_candidates()
+            if candidates:
+                console.print(f"[bold yellow]Found {len(candidates)} IDOR candidate object types[/bold yellow]")
+        except Exception as e:
+            console.print(f"[yellow]IDOR discovery failed: {e}[/yellow]")
+
+        # Run ffuf directory fuzzing for additional endpoint discovery
+        await self._fuzz_directories()
+
+    async def _fuzz_directories(self):
+        """Run ffuf directory fuzzing to discover additional endpoints."""
+        try:
+            from demogorgon.tools.ffuf_bridge import FfufBridge
+            from demogorgon.tools.tool_bus import ToolBus
+            bus = ToolBus()
+            if not bus.is_available("ffuf"):
+                return
+
+            ffuf = FfufBridge(bus)
+            console.print("[cyan]Running directory fuzzing...[/cyan]")
+            result = await ffuf.fuzz_directories(
+                self.target_url,
+                wordlist="/usr/share/wordlists/dirb/common.txt",
+                extensions="php,html,js,txt,bak,old,zip",
+                threads=30,
+                timeout=120,
+            )
+
+            if result.get("error"):
+                console.print(f"[yellow]Fuzzing error: {result['error']}[/yellow]")
+                return
+
+            discovered = 0
+            for f in result.get("findings", []):
+                url = f.get("url", "")
+                if url and self._in_scope(url):
+                    self.memory.add_endpoint(
+                        url,
+                        method="GET",
+                        status_code=f.get("status", 0),
+                        response_length=f.get("length", 0),
+                    )
+                    discovered += 1
+
+            if discovered:
+                console.print(f"[green]Fuzzing discovered {discovered} additional endpoints[/green]")
+        except Exception as e:
+            console.print(f"[yellow]Fuzzing skipped: {e}[/yellow]")
+
+    async def _discover_openapi_specs(self):
+        """Discover and parse OpenAPI/Swagger specs from common URLs."""
+        import json as json_mod
+
+        spec_paths = [
+            "/swagger.json", "/swagger/v1/swagger.json",
+            "/openapi.json", "/openapi/v1.json",
+            "/api-docs", "/api/docs", "/api/swagger.json",
+            "/v1/swagger.json", "/v2/swagger.json", "/v3/swagger.json",
+            "/v1/openapi.json", "/v2/openapi.json", "/v3/openapi.json",
+            "/docs/openapi.json", "/api/openapi.json",
+            "/swagger-ui.json", "/swagger-docs",
+        ]
+
+        console.print("[cyan]Checking for OpenAPI/Swagger specs...[/cyan]")
+        found_spec = None
+        for path in spec_paths:
+            url = f"{self.target_url.rstrip('/')}{path}"
+            try:
+                resp = await self.http.request("GET", url)
+                if resp.get("status_code") == 200 and not resp.get("error"):
+                    body = resp.get("body", "")
+                    # Validate it looks like JSON
+                    if body.strip().startswith(("{", "[")):
+                        try:
+                            spec = json_mod.loads(body)
+                            # Check for OpenAPI/Swagger version fields
+                            if spec.get("openapi") or spec.get("swagger"):
+                                found_spec = spec
+                                console.print(f"[green]Found OpenAPI spec at {path}[/green]")
+                                break
+                        except json_mod.JSONDecodeError:
+                            continue
+            except Exception:
+                continue
+
+        if not found_spec:
+            # Try extracting from page source
+            try:
+                page_content = await self.browser.get_content()
+                for marker in ["swagger.json", "openapi.json", "api-docs"]:
+                    import re
+                    matches = re.findall(rf'["\']([^"\']*{marker}[^"\']*)["\']', page_content, re.I)
+                    for match in matches:
+                        if match.startswith("http"):
+                            spec_url = match
+                        else:
+                            spec_url = f"{self.target_url.rstrip('/')}{match}"
+                        try:
+                            resp = await self.http.request("GET", spec_url)
+                            if resp.get("status_code") == 200:
+                                spec = json_mod.loads(resp.get("body", ""))
+                                if spec.get("openapi") or spec.get("swagger"):
+                                    found_spec = spec
+                                    console.print(f"[green]Found OpenAPI spec from page source: {match}[/green]")
+                                    break
+                        except Exception:
+                            continue
+                    if found_spec:
+                        break
+            except Exception:
+                pass
+
+        if not found_spec:
+            return
+
+        # Parse endpoints from spec
+        base_path = found_spec.get("basePath", "")
+        paths = found_spec.get("paths", {})
+        endpoints_found = 0
+
+        for path, methods in paths.items():
+            full_path = f"{base_path}{path}"
+            for method in methods:
+                if method.lower() in ("get", "post", "put", "delete", "patch", "options", "head"):
+                    full_url = f"{self.target_url.rstrip('/')}{full_path}"
+                    if self._in_scope(full_url):
+                        # Extract parameters for IDOR testing
+                        params = methods[method].get("parameters", [])
+                        param_names = [p.get("name") for p in params if p.get("in") in ("path", "query")]
+
+                        self.memory.add_endpoint(
+                            full_url,
+                            method=method.upper(),
+                        )
+                        endpoints_found += 1
+
+                        # Store parameter info for IDOR testing
+                        if param_names:
+                            ep = self.memory.endpoints.get(full_url)
+                            if ep:
+                                ep.params = {p: "" for p in param_names}
+
+        if endpoints_found:
+            console.print(f"[green]OpenAPI spec yielded {endpoints_found} endpoints[/green]")
 
     # ============================================================
     # Phase 2: Model
@@ -845,6 +1047,11 @@ RESPOND WITH VALID JSON:
             error = str(e)
             console.print(f"[red]Experiment error: {error}[/red]")
 
+        # Run authcore IDOR/role testing for relevant vuln classes
+        if not error and vuln_class in ("idor", "access_control", "privilege_escalation", "role_bypass"):
+            authcore_findings = await self._run_authcore_testing(endpoint, action, vuln_class)
+            findings.extend(authcore_findings)
+
         # Track tested action
         action_key = f"{tool} {action.get('method', 'GET')} {endpoint}"
         self.state.tested_actions.add(action_key)
@@ -1096,6 +1303,102 @@ RESPOND WITH VALID JSON:
                 "length": result.response_length,
             }],
         }
+
+    async def _run_authcore_testing(
+        self, endpoint: str, action: dict, vuln_class: str,
+    ) -> list[dict[str, Any]]:
+        """Run authcore IDOR or role testing and return findings."""
+        findings: list[dict[str, Any]] = []
+        sessions = list(self.auth.sessions.values())
+        if len(sessions) < 2:
+            return findings
+
+        method = action.get("method", "GET")
+
+        try:
+            if vuln_class in ("idor", "access_control"):
+                # Cross-user IDOR testing
+                candidates = self.inventory.get_idor_candidates()
+                for candidate in candidates[:5]:  # Limit to 5 object types
+                    obj_type = candidate["object_type"]
+                    for i, source in enumerate(sessions):
+                        targets = [s for s in sessions if s.session_id != source.session_id]
+                        if not targets:
+                            continue
+                        results = await self.idor_tester.test_cross_access(
+                            object_type=obj_type,
+                            source_session=source,
+                            target_sessions=targets,
+                            methods=[method],
+                        )
+                        for r in results:
+                            if r.get("is_breach"):
+                                findings.append({
+                                    "title": f"IDOR: {obj_type} accessible across users at {endpoint}",
+                                    "type": "idor",
+                                    "severity": "high",
+                                    "confidence": 0.90,
+                                    "evidence": f"Cross-user access: {r.get('breach_type', 'unknown')}",
+                                    "parameter": "",
+                                    "steps": f"1. Authenticate as user A\n2. Request {obj_type} using user B's credentials\n3. Observe unauthorized access",
+                                    "impact": "Attacker can access other users' resources without authorization",
+                                    "url": endpoint,
+                                    "method": method,
+                                })
+
+            elif vuln_class in ("privilege_escalation", "role_bypass"):
+                # Role-based access testing
+                for i, low_session in enumerate(sessions):
+                    for high_session in sessions:
+                        if low_session.session_id == high_session.session_id:
+                            continue
+                        # Test if low-role user can access high-role endpoints
+                        result = await self.role_tester.test_role_escalation(
+                            endpoint=endpoint,
+                            method=method,
+                            low_role_session=low_session,
+                            high_role_session=high_session,
+                        )
+                        if result.get("escalation_detected"):
+                            findings.append({
+                                "title": f"Privilege escalation: {low_session.role} accessed {high_session.role} resource at {endpoint}",
+                                "type": "privilege_escalation",
+                                "severity": "critical",
+                                "confidence": 0.92,
+                                "evidence": f"Role escalation from {low_session.role} to {high_session.role}",
+                                "parameter": "",
+                                "steps": f"1. Authenticate as {low_session.role}\n2. Access {endpoint} (requires {high_session.role})\n3. Observe unauthorized access",
+                                "impact": "Attacker can escalate privileges and access administrative functions",
+                                "url": endpoint,
+                                "method": method,
+                            })
+
+                # Mass assignment testing
+                for session in sessions:
+                    result = await self.role_tester.test_mass_assignment(
+                        endpoint=endpoint,
+                        method=method,
+                        session=session,
+                        base_body=action.get("body", {}),
+                    )
+                    if result.get("vulnerable"):
+                        findings.append({
+                            "title": f"Mass assignment at {endpoint}",
+                            "type": "mass_assignment",
+                            "severity": "high",
+                            "confidence": 0.88,
+                            "evidence": f"Escalation fields accepted: {result.get('escalated_fields', [])}",
+                            "parameter": "",
+                            "steps": f"1. Send request with role/user_role fields set to 'admin'\n2. Observe fields accepted in response",
+                            "impact": "Attacker can modify privileged fields to escalate access",
+                            "url": endpoint,
+                            "method": method,
+                        })
+
+        except Exception as e:
+            console.print(f"[yellow]Authcore testing error: {e}[/yellow]")
+
+        return findings
 
     async def _execute_browser(self, action: dict) -> dict[str, Any]:
         """Execute a browser action."""

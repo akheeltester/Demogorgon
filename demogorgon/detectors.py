@@ -1,288 +1,425 @@
-"""Deterministic Vulnerability Detectors.
+"""Deterministic vulnerability detection patterns.
 
-Pattern-based detection that requires NO LLM — pure logic.
+Provides pattern-based detection for SQL errors, XSS reflection,
+timing anomalies, and information disclosure without LLM dependency.
 """
 
 from __future__ import annotations
 
 import re
+import time
+from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlparse, parse_qs
+
+
+# ============================================================
+# SQL Error Patterns
+# ============================================================
+
+SQL_ERROR_PATTERNS: list[re.Pattern] = [
+    # MySQL
+    re.compile(r"SQL syntax.*?MySQL", re.I),
+    re.compile(r"Warning.*?\bmysql_", re.I),
+    re.compile(r"MySQLSyntaxErrorException", re.I),
+    re.compile(r"valid MySQL result", re.I),
+    re.compile(r"check the manual that corresponds to your MySQL", re.I),
+    re.compile(r"MySqlClient\.", re.I),
+    re.compile(r"com\.mysql\.jdbc", re.I),
+    re.compile(r"Unclosed quotation mark.*?'", re.I),
+    # PostgreSQL
+    re.compile(r"PostgreSQL.*?ERROR", re.I),
+    re.compile(r"Warning.*?\bpg_", re.I),
+    re.compile(r"valid PostgreSQL result", re.I),
+    re.compile(r"Npgsql\.", re.I),
+    re.compile(r"PG::SyntaxError", re.I),
+    re.compile(r"org\.postgresql\.util\.PSQLException", re.I),
+    re.compile(r"ERROR:\s+syntax error at or near", re.I),
+    # MSSQL
+    re.compile(r"Driver.*?SQL[\-\_\ ]*Server", re.I),
+    re.compile(r"OLE DB.*?SQL Server", re.I),
+    re.compile(r"\bSQL Server[^&lt;&quot;]+Driver", re.I),
+    re.compile(r"Warning.*?\bmssql_", re.I),
+    re.compile(r"\bSQL Server[^&lt;&quot;]+[0-9a-fA-F]{8}", re.I),
+    re.compile(r"System\.Data\.SqlClient\.SqlException", re.I),
+    re.compile(r"Unclosed quotation mark.*?'", re.I),
+    re.compile(r"Microsoft SQL Native Client error", re.I),
+    # Oracle
+    re.compile(r"\bORA-[0-9][0-9][0-9][0-9]", re.I),
+    re.compile(r"Oracle error", re.I),
+    re.compile(r"Oracle.*?Driver", re.I),
+    re.compile(r"Warning.*?\boci_", re.I),
+    re.compile(r"Warning.*?\bora_", re.I),
+    re.compile(r"oracle\.jdbc", re.I),
+    # SQLite
+    re.compile(r"SQLite/JDBCDriver", re.I),
+    re.compile(r"SQLite\.Exception", re.I),
+    re.compile(r"System\.Data\.SQLite\.SQLiteException", re.I),
+    re.compile(r"Warning.*?\bsqlite_", re.I),
+    re.compile(r"Warning.*?\bSQLite3::", re.I),
+    re.compile(r"\[SQLITE_ERROR\]", re.I),
+    re.compile(r"SQLite error", re.I),
+    # Generic
+    re.compile(r"SQL syntax error", re.I),
+    re.compile(r"Syntax error.*?in query", re.I),
+    re.compile(r"Unexpected end of SQL command", re.I),
+    re.compile(r"Invalid column name", re.I),
+    re.compile(r"Column.*?not found", re.I),
+    re.compile(r"Conversion failed", re.I),
+    re.compile(r"The conversion.*?failed", re.I),
+    re.compile(r"Microsoft OLE DB Provider for", re.I),
+    re.compile(r"ODBC SQL Server Driver", re.I),
+    re.compile(r"SQL command not properly ended", re.I),
+]
+
+
+# ============================================================
+# XSS Reflection Patterns
+# ============================================================
+
+def detect_xss_reflection(
+    payload: str,
+    response_body: str,
+) -> dict[str, Any] | None:
+    """Check if a payload is reflected in the response body.
+
+    Returns detection info if reflected, None otherwise.
+    """
+    if not payload or not response_body:
+        return None
+
+    # Exact match
+    count = response_body.count(payload)
+    if count > 0:
+        return {
+            "type": "exact_reflection",
+            "payload": payload,
+            "count": count,
+            "severity": "high",
+        }
+
+    # HTML-encoded reflection (e.g., < becomes &lt;)
+    import html
+    encoded = html.escape(payload)
+    if encoded != payload:
+        count = response_body.count(encoded)
+        if count > 0:
+            return {
+                "type": "encoded_reflection",
+                "payload": payload,
+                "encoded_as": encoded,
+                "count": count,
+                "severity": "medium",
+                "note": "Payload reflected but HTML-encoded — may be exploitable with event handlers",
+            }
+
+    # URL-encoded reflection
+    from urllib.parse import quote
+    url_encoded = quote(payload)
+    if url_encoded != payload:
+        count = response_body.count(url_encoded)
+        if count > 0:
+            return {
+                "type": "url_encoded_reflection",
+                "payload": payload,
+                "encoded_as": url_encoded,
+                "count": count,
+                "severity": "low",
+                "note": "Payload reflected but URL-encoded",
+            }
+
+    return None
+
+
+# ============================================================
+# Timing Detection
+# ============================================================
+
+@dataclass
+class TimingResult:
+    """Result of a timing comparison."""
+    baseline_ms: float
+    test_ms: float
+    diff_ms: float
+    ratio: float
+    suspicious: bool
+    threshold_ms: float = 2000.0
+    reason: str = ""
+
+
+def compare_timing(
+    baseline_ms: float,
+    test_ms: float,
+    threshold_ms: float = 2000.0,
+) -> TimingResult:
+    """Compare two request timings and flag anomalies.
+
+    Useful for blind SQL injection, timing oracles, and race conditions.
+    """
+    diff = test_ms - baseline_ms
+    ratio = test_ms / baseline_ms if baseline_ms > 0 else float("inf")
+
+    suspicious = False
+    reason = ""
+
+    if diff > threshold_ms:
+        suspicious = True
+        reason = f"Test request took {diff:.0f}ms longer than baseline (>{threshold_ms}ms threshold)"
+    elif ratio > 3.0 and diff > 500:
+        suspicious = True
+        reason = f"Test request was {ratio:.1f}x slower than baseline ({diff:.0f}ms difference)"
+
+    return TimingResult(
+        baseline_ms=baseline_ms,
+        test_ms=test_ms,
+        diff_ms=diff,
+        ratio=ratio,
+        suspicious=suspicious,
+        threshold_ms=threshold_ms,
+        reason=reason,
+    )
+
+
+async def measure_request_timing(
+    http_client: Any,
+    method: str,
+    url: str,
+    **kwargs: Any,
+) -> tuple[dict[str, Any], float]:
+    """Make an HTTP request and return (response, timing_ms)."""
+    start = time.monotonic()
+    resp = await http_client.request(method, url, **kwargs)
+    elapsed = (time.monotonic() - start) * 1000
+    return resp, elapsed
+
+
+# ============================================================
+# Information Disclosure Patterns
+# ============================================================
+
+INFO_DISCLOSURE_PATTERNS: list[tuple[str, re.Pattern, str]] = [
+    ("stack_trace", re.compile(r"Traceback \(most recent call last\)", re.I), "Python stack trace"),
+    ("stack_trace", re.compile(r"at [\w.$]+\([\w.]+:\d+\)"), "Java/JS stack trace"),
+    ("stack_trace", re.compile(r"File \".*?\",\s*line \d+"), "Python file reference"),
+    ("debug_info", re.compile(r"debug[=:]\s*true", re.I), "Debug mode enabled"),
+    ("debug_info", re.compile(r"APP_DEBUG", re.I), "Debug flag in response"),
+    ("version_disclosure", re.compile(r"X-Powered-By:\s*\S+", re.I), "Server version header"),
+    ("version_disclosure", re.compile(r"Server:\s*\S+", re.I), "Server header"),
+    ("config_exposure", re.compile(r"AKIA[0-9A-Z]{16}"), "AWS access key"),
+    ("config_exposure", re.compile(r"sk_live_[0-9a-zA-Z]+"), "Stripe secret key"),
+    ("config_exposure", re.compile(r"ghp_[0-9a-zA-Z]{36}"), "GitHub personal access token"),
+    ("config_exposure", re.compile(r"-----BEGIN (RSA |EC )?PRIVATE KEY-----"), "Private key"),
+    ("sensitive_path", re.compile(r"/etc/passwd", re.I), "Passwd file reference"),
+    ("sensitive_path", re.compile(r"/etc/shadow", re.I), "Shadow file reference"),
+    ("sensitive_path", re.compile(r"/proc/self/"), "Proc filesystem access"),
+    ("env_exposure", re.compile(r"process\.env\.", re.I), "Environment variable reference"),
+    ("env_exposure", re.compile(r"os\.environ", re.I), "Python environment reference"),
+    ("sql_dump", re.compile(r"INSERT\s+INTO\s+\w+", re.I), "SQL INSERT statement"),
+    ("sql_dump", re.compile(r"CREATE\s+TABLE\s+\w+", re.I), "SQL CREATE TABLE statement"),
+    ("source_code", re.compile(r"<pre.*?>.*?(function|class|import|const|var|let)\s", re.I | re.S), "Source code in HTML"),
+    ("error_verbose", re.compile(r"Exception\s+in\s+thread", re.I), "Verbose thread error"),
+    ("backup_file", re.compile(r"\.(bak|old|orig|save|swp|sql|dump|tar|gz|zip)\b", re.I), "Backup file reference"),
+]
+
+
+@dataclass
+class InfoDisclosure:
+    """Detected information disclosure."""
+    category: str
+    pattern_name: str
+    description: str
+    matched_text: str
+    line_number: int = 0
+
+
+def detect_info_disclosure(body: str, headers: dict[str, str] | None = None) -> list[InfoDisclosure]:
+    """Scan response body and headers for information disclosure."""
+    findings: list[InfoDisclosure] = []
+    text_to_scan = body
+    if headers:
+        text_to_scan += "\n" + "\n".join(f"{k}: {v}" for k, v in headers.items())
+
+    for category, pattern, description in INFO_DISCLOSURE_PATTERNS:
+        match = pattern.search(text_to_scan)
+        if match:
+            start = max(0, match.start() - 50)
+            end = min(len(text_to_scan), match.end() + 50)
+            snippet = text_to_scan[start:end].replace("\n", " ").strip()
+            findings.append(InfoDisclosure(
+                category=category,
+                pattern_name=pattern.pattern[:60],
+                description=description,
+                matched_text=snippet,
+            ))
+
+    return findings
+
+
+# ============================================================
+# WAF Detection
+# ============================================================
+
+WAF_SIGNATURES: list[tuple[str, re.Pattern, str]] = [
+    ("cloudflare", re.compile(r"cloudflare", re.I), "Cloudflare"),
+    ("akamai", re.compile(r"akamai", re.I), "Akamai"),
+    ("aws_waf", re.compile(r"x-amzn-waf", re.I), "AWS WAF"),
+    ("incapsula", re.compile(r"incap_ses|incapsula", re.I), "Incapsula/Imperva"),
+    ("sucuri", re.compile(r"sucuri", re.I), "Sucuri"),
+    ("wordfence", re.compile(r"wordfence", re.I), "Wordfence"),
+    ("mod_security", re.compile(r"mod_security|modsecurity", re.I), "ModSecurity"),
+    ("f5", re.compile(r"F5\b|BIG-IP", re.I), "F5 BIG-IP"),
+    ("fortiweb", re.compile(r"FortiWeb", re.I), "FortiWeb"),
+    ("barracuda", re.compile(r"Barracuda", re.I), "Barracuda WAF"),
+    ("radware", re.compile(r"Radware|DefenScript", re.I), "Radware"),
+    ("denied_page", re.compile(r"access.*?denied.*?by.*?policy", re.I), "Generic WAF block page"),
+    ("captcha_challenge", re.compile(r"(captcha|challenge).*?(verify|human)", re.I), "CAPTCHA challenge"),
+]
+
+
+def detect_waf(headers: dict[str, str], body: str = "") -> list[str]:
+    """Detect WAF/CDN from response headers and body."""
+    detected: list[str] = []
+    header_text = "\n".join(f"{k}: {v}" for k, v in headers.items())
+    scan_text = header_text + "\n" + body
+
+    for name, pattern, display_name in WAF_SIGNATURES:
+        if pattern.search(scan_text):
+            detected.append(display_name)
+
+    return detected
+
+
+# ============================================================
+# Technology Fingerprinting
+# ============================================================
+
+TECH_FINGERPRINTS: list[tuple[str, re.Pattern, str]] = [
+    ("nextjs", re.compile(r"__NEXT_DATA__|_next/static", re.I), "Next.js"),
+    ("react", re.compile(r"react|__REACT_DEVTOOLS", re.I), "React"),
+    ("vue", re.compile(r"vue|__VUE__", re.I), "Vue.js"),
+    ("angular", re.compile(r"ng-version|angular", re.I), "Angular"),
+    ("svelte", re.compile(r"svelte", re.I), "Svelte"),
+    ("django", re.compile(r"csrfmiddlewaretoken|django", re.I), "Django"),
+    ("flask", re.compile(r"werkzeug|flask", re.I), "Flask"),
+    ("express", re.compile(r"express|x-powered-by.*?Express", re.I), "Express"),
+    ("laravel", re.compile(r"laravel|XSRF-TOKEN", re.I), "Laravel"),
+    ("rails", re.compile(r"ruby|rails|_session", re.I), "Ruby on Rails"),
+    ("spring", re.compile(r"spring|X-Application-Context", re.I), "Spring"),
+    ("php", re.compile(r"\.php|PHPSESSID", re.I), "PHP"),
+    ("aspnet", re.compile(r"\.aspx|asp\.net|__VIEWSTATE", re.I), "ASP.NET"),
+    ("wordpress", re.compile(r"wp-content|wp-includes|wordpress", re.I), "WordPress"),
+    ("shopify", re.compile(r"shopify|cdn\.shopify", re.I), "Shopify"),
+    ("ghost", re.compile(r"ghost/.*?\.js|ghost-", re.I), "Ghost CMS"),
+    ("keycloak", re.compile(r"keycloak", re.I), "Keycloak"),
+    ("graphql", re.compile(r"graphql|__schema", re.I), "GraphQL"),
+]
+
+
+def fingerprint_tech(headers: dict[str, str], body: str = "") -> list[str]:
+    """Detect technology stack from response headers and body."""
+    detected: list[str] = []
+    header_text = "\n".join(f"{k}: {v}" for k, v in headers.items())
+    scan_text = header_text + "\n" + body[:50000]
+
+    for name, pattern, display_name in TECH_FINGERPRINTS:
+        if pattern.search(scan_text):
+            detected.append(display_name)
+
+    return detected
+
+
+# ============================================================
+# Detector Class (used by research_loop.py)
+# ============================================================
 
 
 class Detector:
-    def __init__(self):
-        self._sensitive_param_re = re.compile(
-            r'(id|user_id|uid|account|profile|order|doc|file|path|key|token|session|admin|role|org|org_id)',
-            re.IGNORECASE,
-        )
+    """Unified detector that runs all pattern-based checks on a response."""
 
-    def detect(self, url: str, response_body: str, status_code: int, request_method: str = "GET", response_headers: dict | None = None) -> list[dict[str, Any]]:
-        findings = []
-        findings.extend(self.detect_idor(url, response_body, status_code))
-        findings.extend(self.detect_sqli(url, response_body, status_code))
-        findings.extend(self.detect_xss(url, response_body))
-        findings.extend(self.detect_open_redirect(url, response_body))
-        findings.extend(self.detect_info_disclosure(url, response_body))
-        findings.extend(self.detect_misconfigured_headers(url, response_body, status_code, response_headers))
-        findings.extend(self.detect_path_traversal(url, response_body))
-        findings.extend(self.detect_command_injection(url, response_body))
-        findings.extend(self.detect_ssrf(url, response_body))
-        findings.extend(self.detect_auth_bypass(url, response_body, status_code))
-        return findings
+    def detect(
+        self,
+        url: str,
+        body: str,
+        status_code: int,
+        method: str = "GET",
+        response_headers: dict[str, str] | None = None,
+        request_body: str = "",
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        """Run all detectors and return findings."""
+        findings: list[dict[str, Any]] = []
+        headers = response_headers or {}
 
-    def detect_idor(self, url: str, body: str, status: int) -> list[dict[str, Any]]:
-        findings = []
-        parsed = urlparse(url)
-        params = parse_qs(parsed.query, keep_blank_values=True)
-        if status == 200:
-            for param_name in params:
-                if self._sensitive_param_re.search(param_name):
+        # SQL error detection
+        if body:
+            for pattern in SQL_ERROR_PATTERNS:
+                match = pattern.search(body)
+                if match:
+                    start = max(0, match.start() - 100)
+                    end = min(len(body), match.end() + 100)
+                    snippet = body[start:end].replace("\n", " ").strip()
                     findings.append({
-                        "title": f"Potential IDOR — parameter '{param_name}' accessible",
-                        "severity": "Medium",
-                        "type": "IDOR",
+                        "title": f"SQL Error disclosed in {url}",
+                        "type": "sql_error",
+                        "severity": "high",
+                        "confidence": 0.85,
+                        "evidence": f"SQL error pattern matched: {snippet}",
+                        "parameter": "",
+                        "steps": f"1. Send {method} request to {url}\n2. Observe SQL error in response",
+                        "impact": "Database error messages may reveal table names, column names, or query structure, aiding SQL injection attacks",
                         "url": url,
-                        "parameter": param_name,
-                        "evidence": f"Parameter '{param_name}' returned 200. Test with modified values.",
-                        "steps": f"1. Note the value of '{param_name}'\n2. Change to another user's ID\n3. Check if data changes",
-                        "impact": "Unauthorized access to other users' data",
-                        "recommendation": "Implement authorization checks on all ID-based endpoints",
+                        "method": method,
                     })
-        return findings
+                    break  # One SQL error finding per response
 
-    def detect_sqli(self, url: str, body: str, status: int) -> list[dict[str, Any]]:
-        findings = []
-        error_patterns = [
-            r"SQL syntax.*?MySQL",
-            r"Warning.*?mysql_",
-            r"MySQLSyntaxErrorException",
-            r"valid MySQL result",
-            r"pg_query\(\).*?Failed",
-            r"PostgreSQL.*?ERROR",
-            r"ORA-\d{5}",
-            r"Oracle.*?Driver",
-            r"SQLite.*?Error",
-            r"sqlite3\.OperationalError",
-            r"Microsoft.*?ODBC.*?SQL Server",
-            r"Unclosed quotation mark",
-            r"Syntax error.*?in query expression",
-        ]
-        for pattern in error_patterns:
-            if re.search(pattern, body, re.IGNORECASE):
+        # XSS reflection detection
+        if body and request_body:
+            reflection = detect_xss_reflection(request_body, body)
+            if reflection:
                 findings.append({
-                    "title": "SQL Injection — database error detected",
-                    "severity": "Critical",
-                    "type": "SQLi",
+                    "title": f"XSS reflection detected at {url}",
+                    "type": "xss_reflection",
+                    "severity": reflection.get("severity", "medium"),
+                    "confidence": 0.80,
+                    "evidence": f"Payload reflected {reflection['count']} time(s) as {reflection['type']}",
+                    "parameter": "",
+                    "steps": f"1. Send {method} request to {url} with payload\n2. Observe reflection in response",
+                    "impact": "Reflected user input may allow cross-site scripting if HTML encoding is insufficient",
                     "url": url,
-                    "parameter": "N/A",
-                    "evidence": re.search(pattern, body, re.IGNORECASE).group(),
-                    "steps": "1. Inject SQL payloads into parameters\n2. Confirm error-based injection\n3. Use sqlmap for exploitation",
-                    "impact": "Full database compromise, data exfiltration",
-                    "recommendation": "Use parameterized queries, input validation",
+                    "method": method,
                 })
-                break
-        return findings
 
-    def detect_xss(self, url: str, body: str) -> list[dict[str, Any]]:
-        findings = []
-        parsed = urlparse(url)
-        params = parse_qs(parsed.query, keep_blank_values=True)
-        reflected = []
-        for param_name, values in params.items():
-            for value in values:
-                if value and len(value) > 2 and value in body:
-                    if not re.search(r'<!DOCTYPE|<html', body[:200]):
-                        reflected.append(param_name)
-        if reflected:
-            findings.append({
-                "title": f"Reflected XSS — parameters echoed in response: {', '.join(reflected)}",
-                "severity": "Medium",
-                "type": "Reflected XSS",
-                "url": url,
-                "parameter": ", ".join(reflected),
-                "evidence": f"Parameters {reflected} appear to be reflected in the response body",
-                "steps": "1. Inject <script>alert(1)</script> into reflected parameters\n2. Check if HTML encoding is applied\n3. Test various XSS contexts",
-                "impact": "Session hijacking, credential theft, malware delivery",
-                "recommendation": "Implement Content Security Policy, HTML-encode all output",
-            })
-        return findings
-
-    def detect_open_redirect(self, url: str, body: str) -> list[dict[str, Any]]:
-        findings = []
-        parsed = urlparse(url)
-        params = parse_qs(parsed.query, keep_blank_values=True)
-        redirect_params = ["redirect", "url", "next", "return", "goto", "continue", "dest", "redir", "redirect_uri", "return_to", "checkout_url", "return_url"]
-        for param_name in params:
-            if param_name.lower() in redirect_params:
-                for value in params[param_name]:
-                    if value.startswith("http://") or value.startswith("//"):
-                        findings.append({
-                            "title": f"Open Redirect — parameter '{param_name}' accepts external URLs",
-                            "severity": "Medium",
-                            "type": "Open Redirect",
-                            "url": url,
-                            "parameter": param_name,
-                            "evidence": f"Parameter '{param_name}' accepts value: {value}",
-                            "steps": f"1. Set '{param_name}' to https://evil.com\n2. Check if redirect occurs\n3. Test phishing scenarios",
-                            "impact": "Phishing, OAuth token theft, malware delivery",
-                            "recommendation": "Validate redirect targets against whitelist",
-                        })
-        return findings
-
-    def detect_info_disclosure(self, url: str, body: str) -> list[dict[str, Any]]:
-        findings = []
-        patterns = [
-            (r"(\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b)", "Email address exposed"),
-            (r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "IP address exposed"),
-            (r"(?i)(api[_-]?key|secret[_-]?key|access[_-]?key|auth[_-]?token)\s*[:=]\s*['\"]?[A-Za-z0-9+/=_-]{16,}['\"]?", "API key/secret exposed"),
-            (r"(?i)stack\s*trace|at\s+[\w.]+\([\w.]+:\d+\)", "Stack trace exposed"),
-            (r"(?i)version[:\s]+[\d.]+", "Version information exposed"),
-            (r"(?i)(password|passwd|pwd)\s*[:=]\s*['\"]?[^\s'\"]+['\"]?", "Password exposed in response"),
-        ]
-        for pattern, desc in patterns:
-            match = re.search(pattern, body)
-            if match:
+        # Information disclosure detection
+        if body or headers:
+            disclosures = detect_info_disclosure(body, headers)
+            for d in disclosures:
                 findings.append({
-                    "title": f"Information Disclosure — {desc}",
-                    "severity": "Low",
-                    "type": "Info Disclosure",
+                    "title": f"{d.description} at {url}",
+                    "type": "info_disclosure",
+                    "severity": "medium" if d.category in ("config_exposure", "sensitive_path") else "low",
+                    "confidence": 0.75,
+                    "evidence": f"[{d.category}] {d.matched_text}",
+                    "parameter": "",
+                    "steps": f"1. Send {method} request to {url}\n2. Observe {d.description.lower()} in response",
+                    "impact": f"{d.description} may expose internal system details to attackers",
                     "url": url,
-                    "parameter": "N/A",
-                    "evidence": match.group(),
-                    "steps": f"1. Review response for {desc.lower()}\n2. Check if this is intentional",
-                    "impact": "Information leakage aids attackers",
-                    "recommendation": "Remove sensitive information from responses",
+                    "method": method,
                 })
-        return findings
 
-    def detect_misconfigured_headers(self, url: str, body: str, status: int, response_headers: dict | None = None) -> list[dict[str, Any]]:
-        findings = []
-        if response_headers is None:
-            return findings
-
-        # Normalize response header keys to lowercase for case-insensitive comparison
-        present_headers = {k.lower() for k in response_headers.keys()}
-
-        critical_headers = [
-            ("X-Frame-Options", "Clickjacking protection missing"),
-            ("X-Content-Type-Options", "MIME type sniffing protection missing"),
-            ("Strict-Transport-Security", "HSTS header missing"),
-            ("Content-Security-Policy", "CSP header missing"),
-            ("X-XSS-Protection", "XSS filter protection missing"),
-        ]
-        for header_name, desc in critical_headers:
-            if header_name.lower() not in present_headers:
+        # WAF detection (informational)
+        if headers:
+            wafs = detect_waf(headers, body)
+            if wafs:
                 findings.append({
-                    "title": f"Security Header Missing — {desc}",
-                    "severity": "Low",
-                    "type": "Missing Header",
+                    "title": f"WAF detected: {', '.join(wafs)} at {url}",
+                    "type": "waf_detected",
+                    "severity": "info",
+                    "confidence": 0.90,
+                    "evidence": f"WAF/CDN: {', '.join(wafs)}",
+                    "parameter": "",
+                    "steps": "",
+                    "impact": "WAF may block or sanitize attack payloads",
                     "url": url,
-                    "parameter": header_name,
-                    "evidence": f"Header '{header_name}' not found in response",
-                    "steps": f"1. Check response headers for '{header_name}'\n2. Add header to server configuration",
-                    "impact": f"Missing {header_name} protection",
-                    "recommendation": f"Add '{header_name}' header to all responses",
+                    "method": method,
                 })
-        return findings
 
-    def detect_path_traversal(self, url: str, body: str) -> list[dict[str, Any]]:
-        findings = []
-        traversal_patterns = [
-            r"\.\.\/",
-            r"\.\.\\",
-            r"%2e%2e%2f",
-            r"%2e%2e/",
-            r"\.\.%2f",
-            r"%2e%2e%5c",
-        ]
-        for pattern in traversal_patterns:
-            if re.search(pattern, url, re.IGNORECASE):
-                if any(marker in body for marker in ["root:", "/etc/passwd", "Windows", "[boot loader]"]):
-                    findings.append({
-                        "title": "Path Traversal — file system access detected",
-                        "severity": "Critical",
-                        "type": "Path Traversal",
-                        "url": url,
-                        "parameter": "URL path",
-                        "evidence": "Traversal sequence in URL returned sensitive file content",
-                        "steps": "1. Use ../ sequences in URL path\n2. Access /etc/passwd or equivalent\n3. Test for file write capabilities",
-                        "impact": "Arbitrary file read, potential RCE",
-                        "recommendation": "Validate and sanitize file paths, use chroot jails",
-                    })
-                break
-        return findings
-
-    def detect_command_injection(self, url: str, body: str) -> list[dict[str, Any]]:
-        findings = []
-        cmd_patterns = [
-            r"uid=\d+\(",
-            r"root:x:0:0",
-            r"Windows IP Configuration",
-            r"Linux version \d",
-            r"Darwin Kernel",
-            r"/bin/sh",
-            r"/bin/bash",
-        ]
-        for pattern in cmd_patterns:
-            if re.search(pattern, body):
-                findings.append({
-                    "title": "Command Injection — OS command execution detected",
-                    "severity": "Critical",
-                    "type": "Command Injection",
-                    "url": url,
-                    "parameter": "N/A",
-                    "evidence": re.search(pattern, body).group(),
-                    "steps": "1. Inject OS commands via parameters\n2. Confirm RCE with id, whoami, etc.\n3. Establish reverse shell",
-                    "impact": "Full server compromise",
-                    "recommendation": "Use parameterized APIs, never pass user input to shell commands",
-                })
-                break
-        return findings
-
-    def detect_ssrf(self, url: str, body: str) -> list[dict[str, Any]]:
-        findings = []
-        ssrf_markers = [
-            r"ami-[a-z0-9]{17}",
-            r"instance-id",
-            r"169\.254\.169\.254",
-            r"metadata\.google\.internal",
-            r"localhost:\d+",
-            r"127\.0\.0\.1",
-        ]
-        for pattern in ssrf_markers:
-            if re.search(pattern, body):
-                findings.append({
-                    "title": "SSRF — internal resource access detected",
-                    "severity": "Critical",
-                    "type": "SSRF",
-                    "url": url,
-                    "parameter": "N/A",
-                    "evidence": re.search(pattern, body).group(),
-                    "steps": "1. Point URL parameter to internal services\n2. Access cloud metadata endpoints\n3. Pivot to internal network",
-                    "impact": "Cloud metadata theft, internal network scanning",
-                    "recommendation": "Implement URL validation, block internal IPs",
-                })
-                break
-        return findings
-
-    def detect_auth_bypass(self, url: str, body: str, status: int) -> list[dict[str, Any]]:
-        findings = []
-        admin_paths = ["/admin", "/admin/", "/dashboard", "/wp-admin", "/phpmyadmin", "/manager", "/console"]
-        for path in admin_paths:
-            if path in url.lower() and status == 200:
-                admin_indicators = ["dashboard", "admin panel", "manage", "settings", "user list", "delete", "edit user"]
-                if any(indicator in body.lower() for indicator in admin_indicators):
-                    findings.append({
-                        "title": f"Auth Bypass — admin panel accessible at {path}",
-                        "severity": "Critical",
-                        "type": "Auth Bypass",
-                        "url": url,
-                        "parameter": "N/A",
-                        "evidence": f"Admin panel accessible at {path} without authentication",
-                        "steps": f"1. Navigate to {path}\n2. Verify admin functionality is accessible\n3. Test admin operations",
-                        "impact": "Unauthorized admin access, full application control",
-                        "recommendation": "Implement proper authentication and authorization checks",
-                    })
-                break
         return findings

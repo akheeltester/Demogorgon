@@ -24,7 +24,6 @@ from demogorgon.auth.bridge import AuthManager
 from demogorgon.tools.tool_bus import ToolBus
 from demogorgon.tools.recon import Recon
 from demogorgon.reasoning_trace import ReasoningTrace
-from demogorgon.evidence_validator import EvidenceValidator
 from demogorgon.research_loop import ResearchLoop, LoopConfig
 
 console = Console()
@@ -69,7 +68,6 @@ class Researcher:
         self.tool_bus = ToolBus()
         self.recon = Recon(self.http, self.tool_bus)
         self.reasoning = ReasoningTrace()
-        self.evidence_validator = EvidenceValidator()
 
         self.memory = Memory(self.target_url, self.output_dir)
         self.app_model = ApplicationModel(self.target_url)
