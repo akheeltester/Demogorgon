@@ -21,13 +21,12 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.responses import HTMLResponse
 
 from .models import (
     ProviderCreate, ProviderTestRequest, EngagementCreate,
-    InstructionRequest, SessionControl,
+    InstructionRequest,
 )
 from .ws_bridge import get_web_bridge
 from ..agent.events import EventType
@@ -318,6 +317,24 @@ async def get_findings(engagement_id: str):
     if not session:
         raise HTTPException(status_code=404, detail="Engagement not found")
     return {"findings": session.findings}
+
+
+@app.get("/api/engagements/{engagement_id}/export")
+async def export_findings(engagement_id: str):
+    """Export findings as JSON for download."""
+    session = _get_session_by_id(engagement_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Engagement not found")
+    return {
+        "target": session.target,
+        "session_id": session.session_id,
+        "findings": session.findings,
+        "evidence_count": session.evidence_count,
+        "summary": {
+            "total_findings": len(session.findings),
+            "total_evidence": session.evidence_count,
+        },
+    }
 
 
 @app.get("/api/engagements/{engagement_id}/evidence")
@@ -715,6 +732,15 @@ label { display: block; color: #888; font-size: 12px; margin-bottom: 6px; text-t
 .badge.blue { background: #0a0a1a; color: #60a5fa; border: 1px solid #1e40af; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } .row { flex-direction: column; } }
+.toast-container { position: fixed; bottom: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 8px; }
+.toast { padding: 12px 20px; border-radius: 6px; font-size: 13px; font-family: inherit; color: white; opacity: 0; transform: translateX(100px); animation: toastIn 0.3s ease forwards; max-width: 400px; word-break: break-word; }
+.toast.error { background: #991b1b; border: 1px solid #ef4444; }
+.toast.success { background: #166534; border: 1px solid #4ade80; }
+.toast.info { background: #1e40af; border: 1px solid #60a5fa; }
+@keyframes toastIn { to { opacity: 1; transform: translateX(0); } }
+.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid #333; border-top-color: #00d4ff; border-radius: 50%; animation: spin 0.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.loading-overlay { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 20px; color: #888; font-size: 13px; }
 """
 
 
@@ -887,12 +913,12 @@ def _setup_html() -> str:
             const provider = document.getElementById('provider-select').value;
             const key = document.getElementById('api-key').value;
             const url = document.getElementById('base-url').value;
-            // Save key temporarily for discovery
+            // Test connection without saving config
             if (key) {{
-                await fetch('/api/providers', {{
+                await fetch('/api/providers/test', {{
                     method: 'POST',
                     headers: {{'Content-Type': 'application/json'}},
-                    body: JSON.stringify({{provider, api_key: key, base_url: url, selected_model: 'temp'}})
+                    body: JSON.stringify({{provider, api_key: key, base_url: url}})
                 }});
             }}
             const r = await fetch(`/api/models?provider=${{provider}}`);
@@ -1186,7 +1212,8 @@ def _hunt_html(session_id: str = "") -> str:
                 <h3>Controls</h3>
                 <button class="btn success" onclick="resumeSession()" style="width:100%;margin-bottom:8px">▶ Resume</button>
                 <button class="btn" onclick="pauseSession()" style="width:100%;margin-bottom:8px">⏸ Pause</button>
-                <button class="btn danger" onclick="stopSession()" style="width:100%">■ Stop</button>
+                <button class="btn danger" onclick="stopSession()" style="width:100%;margin-bottom:8px">■ Stop</button>
+                <button class="btn" onclick="exportFindings()" style="width:100%">↓ Export Findings</button>
             </div>
             <div class="panel">
                 <h3>Scope <span id="scope-count" style="color:#888;font-size:11px">(0)</span></h3>
@@ -1247,6 +1274,26 @@ def _hunt_html(session_id: str = "") -> str:
 
     <script>
         const sessionId = '{session_id}';
+
+        function escapeHtml(s) {{
+            if (!s) return '';
+            const d = document.createElement('div');
+            d.appendChild(document.createTextNode(s));
+            return d.innerHTML;
+        }}
+
+        function showToast(msg, type='error') {{
+            let c = document.querySelector('.toast-container');
+            if (!c) {{ c = document.createElement('div'); c.className = 'toast-container'; document.body.appendChild(c); }}
+            const t = document.createElement('div');
+            t.className = 'toast ' + type;
+            t.textContent = msg;
+            c.appendChild(t);
+            setTimeout(() => {{ t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }}, 4000);
+        }}
+
+        function showLoading(el) {{ el.innerHTML = '<div class="loading-overlay"><div class="spinner"></div> Loading...</div>'; }}
+
         const ws = new WebSocket(`ws://${{location.host}}/ws/events`);
         const eventsDiv = document.getElementById('events');
         let eventCount = 0;
@@ -1256,9 +1303,9 @@ def _hunt_html(session_id: str = "") -> str:
             document.getElementById('ws-status').style.color = '#4ade80';
         }};
         ws.onclose = () => {{
-            document.getElementById('ws-status').textContent = '● DISCONNECTED';
-            document.getElementById('ws-status').style.color = '#ef4444';
-            setTimeout(() => location.reload(), 3000);
+            document.getElementById('ws-status').textContent = '● RECONNECTING...';
+            document.getElementById('ws-status').style.color = '#eab308';
+            setTimeout(() => {{ loadSession(); loadFindings(); loadTrace(); }}, 2000);
         }};
         ws.onmessage = (e) => {{
             const event = JSON.parse(e.data);
@@ -1319,7 +1366,7 @@ def _hunt_html(session_id: str = "") -> str:
                     const d = await r.json();
                     updateSessionUI(d);
                 }}
-            }} catch(e) {{}}
+            }} catch(e) {{ showToast('Failed to load session: ' + e.message); }}
         }}
 
         function updateSessionUI(s) {{
@@ -1345,7 +1392,7 @@ def _hunt_html(session_id: str = "") -> str:
                 }}
                 if (d.tokens) document.getElementById('tokens').textContent = d.tokens.total || 0;
                 document.getElementById('cycles').textContent = d.total_cycles || 0;
-            }} catch(e) {{}}
+            }} catch(e) {{ showToast('Request failed: ' + e.message); }}
         }}
 
         async function loadScope() {{
@@ -1371,7 +1418,7 @@ def _hunt_html(session_id: str = "") -> str:
                         <span class="remove" onclick="removeScope('${{a.pattern}}')">✕</span>
                     </div>
                 `).join('');
-            }} catch(e) {{}}
+            }} catch(e) {{ showToast('Request failed: ' + e.message); }}
         }}
 
         async function addScope() {{
@@ -1424,9 +1471,9 @@ def _hunt_html(session_id: str = "") -> str:
                 }}
                 el.innerHTML = d.findings.map((f, i) => {{
                     const sev = f.severity || '?';
-                    return `<div class="finding-item" onclick="showFindingDetail(${{i}})"><span class="sev ${{sev}}">${{sev.toUpperCase()}}</span> ${{f.title || f.description || 'Untitled'}}</div>`;
+                    return `<div class="finding-item" onclick="showFindingDetail(${{i}})"><span class="sev ${{sev}}">${{sev.toUpperCase()}}</span> ${{escapeHtml(f.title || f.description || 'Untitled')}}</div>`;
                 }}).join('');
-            }} catch(e) {{}}
+            }} catch(e) {{ showToast('Request failed: ' + e.message); }}
         }}
 
         async function showFindingDetail(idx) {{
@@ -1440,16 +1487,16 @@ def _hunt_html(session_id: str = "") -> str:
                 document.getElementById('modal-title').textContent = f.title || 'Finding';
                 let html = '';
                 html += `<div class="field"><div class="label">Severity</div><div class="val"><span class="badge ${{f.severity === 'critical' ? 'red' : f.severity === 'high' ? 'yellow' : 'blue'}}">${{(f.severity||'?').toUpperCase()}}</span></div></div>`;
-                if (f.vuln_class) html += `<div class="field"><div class="label">Vulnerability Class</div><div class="val">${{f.vuln_class}}</div></div>`;
-                if (f.endpoint) html += `<div class="field"><div class="label">Endpoint</div><div class="val" style="color:#00d4ff">${{f.endpoint}}</div></div>`;
-                if (f.description) html += `<div class="field"><div class="label">Description</div><div class="val">${{f.description}}</div></div>`;
-                if (f.impact) html += `<div class="field"><div class="label">Impact</div><div class="val">${{f.impact}}</div></div>`;
-                if (f.steps && f.steps.length) html += `<div class="field"><div class="label">Reproduction Steps</div><div class="val">${{f.steps.map((s,i) => `${{i+1}}. ${{s}}`).join('<br>')}}</div></div>`;
-                if (f.evidence) html += `<div class="field"><div class="label">Evidence</div><pre>${{typeof f.evidence === 'string' ? f.evidence : JSON.stringify(f.evidence, null, 2)}}</pre></div>`;
+                if (f.vuln_class) html += `<div class="field"><div class="label">Vulnerability Class</div><div class="val">${{escapeHtml(f.vuln_class)}}</div></div>`;
+                if (f.endpoint) html += `<div class="field"><div class="label">Endpoint</div><div class="val" style="color:#00d4ff">${{escapeHtml(f.endpoint)}}</div></div>`;
+                if (f.description) html += `<div class="field"><div class="label">Description</div><div class="val">${{escapeHtml(f.description)}}</div></div>`;
+                if (f.impact) html += `<div class="field"><div class="label">Impact</div><div class="val">${{escapeHtml(f.impact)}}</div></div>`;
+                if (f.steps && f.steps.length) html += `<div class="field"><div class="label">Reproduction Steps</div><div class="val">${{f.steps.map((s,i) => `${{i+1}}. ${{escapeHtml(s)}}`).join('<br>')}}</div></div>`;
+                if (f.evidence) html += `<div class="field"><div class="label">Evidence</div><pre>${{escapeHtml(typeof f.evidence === 'string' ? f.evidence : JSON.stringify(f.evidence, null, 2))}}</pre></div>`;
                 if (f.raw) html += `<div class="field"><div class="label">Raw Data</div><pre>${{JSON.stringify(f.raw, null, 2)}}</pre></div>`;
                 document.getElementById('modal-body').innerHTML = html;
                 modal.classList.add('show');
-            }} catch(e) {{}}
+            }} catch(e) {{ showToast('Request failed: ' + e.message); }}
         }}
 
         async function loadTrace() {{
@@ -1467,7 +1514,7 @@ def _hunt_html(session_id: str = "") -> str:
                     const ts = new Date(e.timestamp * 1000).toLocaleTimeString();
                     return `<div style="padding:3px 0;border-bottom:1px solid #1a1a2e"><span style="color:#555">${{ts}}</span> <span style="color:#00d4ff">${{e.type}}</span> ${{e.content.substring(0, 60)}}</div>`;
                 }}).join('');
-            }} catch(e) {{}}
+            }} catch(e) {{ showToast('Request failed: ' + e.message); }}
         }}
 
         async function loadTools() {{
@@ -1480,12 +1527,13 @@ def _hunt_html(session_id: str = "") -> str:
                     return;
                 }}
                 el.innerHTML = d.capabilities.map(c => `<div style="padding:2px 0;color:#888">• ${{c}}</div>`).join('');
-            }} catch(e) {{}}
+            }} catch(e) {{ showToast('Request failed: ' + e.message); }}
         }}
 
         async function pauseSession() {{
             const id = sessionId || document.getElementById('target').textContent;
             if (!id || id === '—') return;
+            if (!confirm('Pause this hunt?')) return;
             await fetch(`/api/engagements/${{encodeURIComponent(id)}}/pause`, {{method: 'POST'}});
             document.getElementById('status').textContent = 'PAUSED';
         }}
@@ -1493,6 +1541,7 @@ def _hunt_html(session_id: str = "") -> str:
         async function resumeSession() {{
             const id = sessionId || document.getElementById('target').textContent;
             if (!id || id === '—') return;
+            if (!confirm('Resume this hunt?')) return;
             await fetch(`/api/engagements/${{encodeURIComponent(id)}}/resume`, {{method: 'POST'}});
             document.getElementById('status').textContent = 'RUNNING';
         }}
@@ -1503,6 +1552,23 @@ def _hunt_html(session_id: str = "") -> str:
             if (!confirm('Stop this session?')) return;
             await fetch(`/api/engagements/${{encodeURIComponent(id)}}/stop`, {{method: 'POST'}});
             document.getElementById('status').textContent = 'STOPPED';
+        }}
+
+        async function exportFindings() {{
+            const id = sessionId || document.getElementById('target').textContent;
+            if (!id || id === '—') return;
+            try {{
+                const r = await fetch(`/api/engagements/${{encodeURIComponent(id)}}/export`);
+                const data = await r.json();
+                const blob = new Blob([JSON.stringify(data, null, 2)], {{type: 'application/json'}});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `findings-${{id}}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+                showToast('Findings exported!', 'success');
+            }} catch(e) {{ showToast('Export failed: ' + e.message); }}
         }}
 
         // Handle Enter key on inputs
@@ -1570,11 +1636,11 @@ def _hunts_html() -> str:
             <div class="summary-item"><div class="big" id="total-findings" style="color:#a855f7">0</div><div class="lbl">Total Findings</div></div>
         </div>
         <div class="filter-bar">
-            <button class="filter-btn active" onclick="filterHunts('all')">All</button>
-            <button class="filter-btn" onclick="filterHunts('running')">Running</button>
-            <button class="filter-btn" onclick="filterHunts('paused')">Paused</button>
-            <button class="filter-btn" onclick="filterHunts('completed')">Completed</button>
-            <button class="filter-btn" onclick="filterHunts('stopped')">Stopped</button>
+            <button class="filter-btn active" onclick="filterHunts('all', this)">All</button>
+            <button class="filter-btn" onclick="filterHunts('running', this)">Running</button>
+            <button class="filter-btn" onclick="filterHunts('paused', this)">Paused</button>
+            <button class="filter-btn" onclick="filterHunts('completed', this)">Completed</button>
+            <button class="filter-btn" onclick="filterHunts('stopped', this)">Stopped</button>
             <div style="flex:1"></div>
             <a href="/new-hunt" class="btn primary" style="font-size:12px;padding:6px 16px">+ New Hunt</a>
         </div>
@@ -1617,10 +1683,11 @@ def _hunts_html() -> str:
         }}
 
         let currentFilter = 'all';
-        function filterHunts(filter) {{
+        function filterHunts(filter, el) {{
             currentFilter = filter;
             document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-            event.target.classList.add('active');
+            if (el) el.classList.add('active');
+            else document.querySelector('.filter-btn').classList.add('active');
             const filtered = filter === 'all' ? allHunts : allHunts.filter(s => s.status === filter);
             renderHunts(filtered);
         }}
@@ -1698,6 +1765,13 @@ def _findings_html() -> str:
         </div>
     </div>
     <script>
+        function escapeHtml(s) {{
+            if (!s) return '';
+            const d = document.createElement('div');
+            d.appendChild(document.createTextNode(s));
+            return d.innerHTML;
+        }}
+
         async function loadFindings() {{
             const r = await fetch('/api/engagements');
             const d = await r.json();
@@ -1710,7 +1784,7 @@ def _findings_html() -> str:
                     if (fd.findings) {{
                         fd.findings.forEach(f => allFindings.push({{...f, target: s.target}}));
                     }}
-                }} catch(e) {{}}
+                }} catch(e) {{ showToast('Request failed: ' + e.message); }}
             }}
             if (!allFindings.length) {{
                 el.innerHTML = '<div class="empty">No findings across any session</div>';
@@ -1720,9 +1794,9 @@ def _findings_html() -> str:
                 const sev = f.severity || 'unknown';
                 const sevColor = {{critical:'#ef4444',high:'#f97316',medium:'#eab308',low:'#60a5fa'}}[sev] || '#888';
                 return `<div class="finding-card" style="border-left: 3px solid ${{sevColor}}">
-                    <h4><span class="badge" style="background:${{sevColor}}20;color:${{sevColor}};border:1px solid ${{sevColor}}">${{sev.toUpperCase()}}</span> ${{f.title || 'Untitled'}}</h4>
-                    <div class="meta">Target: ${{f.target}} ${{f.endpoint ? '| Endpoint: ' + f.endpoint : ''}}</div>
-                    <div class="desc">${{f.description || ''}}</div>
+                    <h4><span class="badge" style="background:${{sevColor}}20;color:${{sevColor}};border:1px solid ${{sevColor}}">${{sev.toUpperCase()}}</span> ${{escapeHtml(f.title || 'Untitled')}}</h4>
+                    <div class="meta">Target: ${{escapeHtml(f.target)}} ${{f.endpoint ? '| Endpoint: ' + escapeHtml(f.endpoint) : ''}}</div>
+                    <div class="desc">${{escapeHtml(f.description || '')}}</div>
                 </div>`;
             }}).join('');
         }}

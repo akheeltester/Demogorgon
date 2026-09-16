@@ -389,11 +389,12 @@ class LoopConfig:
 ## Test Coverage
 
 ```
-216 tests passing
+379 tests passing
 ├── auth/authcore/tests/    — 155 tests (sessions, store, persistence)
-├── core/tests/test_core.py —  61 tests (ScopeValidator, ResearchConfig,
+├── core/tests/             — 165 tests (ScopeValidator, ResearchConfig,
 │                              models, ContextBuilder, ExploitConfidenceEngine,
 │                              Memory persistence, Checkpoint, ARE modules, CLI)
+├── tools/                  — 59 tests (browser, http, replay, discovery)
 ```
 
 ---
@@ -406,12 +407,10 @@ bugbounty-tool/
 │   ├── main.py                 # CLI entry point
 │   ├── researcher.py           # V2 researcher
 │   ├── researcher_v3.py        # V3 researcher (recommended)
-│   ├── research_loop.py        # Main brain (1500+ lines)
+│   ├── research_loop.py        # Main brain (1600+ lines)
 │   ├── memory.py               # Working memory + persistence
 │   ├── app_model.py            # Application model
-│   ├── detectors.py            # Auto-detection (headers, errors, etc.)
-│   ├── evidence_validator.py   # 7-Question Gate
-│   ├── self_eval.py            # Self-evaluation
+│   ├── detectors.py            # Deterministic vulnerability detection patterns
 │   ├── reasoning_trace.py      # Decision logging
 │   │
 │   ├── core/                   # Canonical domain
@@ -463,8 +462,14 @@ bugbounty-tool/
 │   │   ├── browser.py          # Playwright browser automation
 │   │   ├── reporter.py         # Markdown/JSON report generation
 │   │   ├── checkpoint.py       # Crash recovery
+│   │   ├── ffuf_bridge.py      # ffuf directory fuzzing
 │   │   ├── nuclei_bridge.py    # Nuclei integration
-│   │   └── notifier.py         # Discord/Telegram notifications
+│   │   └── discovery.py        # Tool discovery
+│   │
+│   ├── web/                    # Web control center
+│   │   ├── app.py              # FastAPI routes + HTML templates
+│   │   ├── ws_bridge.py        # WebSocket event bridge
+│   │   └── models.py           # Pydantic request/response models
 │   │
 │   └── llm/                    # LLM integration
 │       └── manager.py          # Multi-provider LLM manager

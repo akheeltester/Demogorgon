@@ -16,7 +16,7 @@
 
 [![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python&logoColor=white)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/Status-Phase_10.1-brightred)](https://github.com/akheeltester/Demogorgon)
+[![Status](https://img.shields.io/badge/Status-Phase_17-brightred)](https://github.com/akheeltester/Demogorgon)
 
 ---
 
@@ -119,6 +119,22 @@ python -m demogorgon --program
 python -m demogorgon resume
 ```
 
+### 5. Web Interface
+
+```bash
+# Start the web control center
+python -m demogorgon web
+
+# Open http://localhost:8000 in your browser
+```
+
+The web UI provides:
+- **Setup page** — Configure LLM providers (OpenAI, OpenRouter, Anthropic, DeepSeek, Gemini, Ollama)
+- **New Hunt** — Create engagements with target, program policy, and budget controls
+- **Dashboard** — Live research monitoring with WebSocket event stream, findings, scope management
+- **Hunts** — List all engagements with filtering (running/paused/completed)
+- **Findings** — Cross-session findings viewer with severity badges and export
+
 ### 5. Test with Juice Shop (safe, local target)
 
 ```bash
@@ -201,12 +217,29 @@ demogorgon/
 │   ├── executor.py          ToolExecutor
 │   └── adapters/            subfinder, httpx, katana, ffuf, nuclei, etc.
 │
+├── auth/
+│   ├── bridge.py            AuthManager (multi-session)
+│   └── authcore/            IDOR tester, role tester, object inventory, session store
+│
+├── web/
+│   ├── app.py               FastAPI web control center
+│   ├── ws_bridge.py         WebSocket event bridge
+│   └── models.py            Pydantic request/response models
+│
+├── executors/               16 deterministic security testers
+├── are/                     Adaptive Research Engine (knowledge base, chain finder, etc.)
+├── controller/              Executive controller, tool selection, self-evaluator
 ├── cli/
 │   └── __init__.py          CLI entry point (argparse)
 │
 ├── main.py                  Legacy entry point
-├── researcher.py            Legacy researcher
-└── app_model.py             ApplicationModel
+├── researcher.py            V2 researcher
+├── researcher_v3.py         V3 researcher (recommended)
+├── research_loop.py         Main brain (1600+ lines)
+├── memory.py                Working memory + persistence
+├── app_model.py             Application model
+├── detectors.py             Deterministic vulnerability detection patterns
+└── reasoning_trace.py       Decision logging
 ```
 
 ---
@@ -239,8 +272,8 @@ demogorgon/
 # Install dev dependencies
 pip install -e ".[dev]"
 
-# Run unit tests (360+ tests)
-pytest demogorgon/core/tests/ -v
+# Run unit tests (379+ tests)
+pytest demogorgon/ -v
 
 # Run integration tests (standalone)
 python test_integration.py
