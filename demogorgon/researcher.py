@@ -25,6 +25,10 @@ from demogorgon.tools.tool_bus import ToolBus
 from demogorgon.tools.recon import Recon
 from demogorgon.reasoning_trace import ReasoningTrace
 from demogorgon.research_loop import ResearchLoop, LoopConfig
+from demogorgon.core.decision_trace import DecisionTrace
+from demogorgon.tools.manager import create_default_tool_manager
+from demogorgon.laya.engine import LayaEngine
+from demogorgon.llm.manager import AIProviderManager
 
 console = Console()
 
@@ -69,6 +73,20 @@ class Researcher:
         self.recon = Recon(self.http, self.tool_bus)
         self.reasoning = ReasoningTrace()
 
+        # Laya decision engine + structured tool manager
+        self.decision_trace = DecisionTrace()
+        self.tool_manager = create_default_tool_manager(self.tool_bus)
+        self.ai_manager = AIProviderManager()
+        try:
+            self.ai_manager.configure()
+        except Exception:
+            pass
+        self.laya = LayaEngine(
+            llm_manager=self.ai_manager,
+            config=config.laya,
+            trace=self.decision_trace,
+        )
+
         self.memory = Memory(self.target_url, self.output_dir)
         self.app_model = ApplicationModel(self.target_url)
         self.scope = ScopeValidator(
@@ -91,7 +109,7 @@ class Researcher:
         await self.browser.launch()
         console.print("[cyan]Browser ready[/cyan]")
 
-        # Create research loop from canonical config
+        # Create research loop from canonical config + Laya wiring
         config = LoopConfig(
             max_experiments=self.config.max_experiments,
             self_eval_interval=self.config.self_eval_interval,
@@ -110,6 +128,10 @@ class Researcher:
             browser_tool=self.browser,
             auth_manager=self.auth,
             config=config,
+            hunt_config=self.config,
+            laya=self.laya,
+            decision_trace=self.decision_trace,
+            tool_manager=self.tool_manager,
         )
 
         # Run the research loop

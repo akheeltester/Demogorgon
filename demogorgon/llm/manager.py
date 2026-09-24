@@ -1,4 +1,6 @@
-"""LLM Manager — provider selection, configuration, retry, and fallback.
+"""AI Provider Manager — provider selection, configuration, retry, and fallback.
+
+Class name: AIProviderManager (LLMManager is a backward-compatible alias).
 
 Supports multiple configuration formats (highest priority first):
 
@@ -6,6 +8,8 @@ Supports multiple configuration formats (highest priority first):
     DEMOGORGON_LLM_PROVIDER=openai|openrouter|anthropic|deepseek|ollama
     DEMOGORGON_API_KEY=api_key
     DEMOGORGON_MODEL=model_name
+    DEMOGORGON_FAST_MODEL=fast_model_name      # Laya decisions
+    DEMOGORGON_REASONING_MODEL=reasoning_model # deep analysis
     DEMOGORGON_BASE_URL=base_url
 
 2. LLM_* prefix (legacy):
@@ -149,11 +153,11 @@ def _detect_provider_from_env(env: dict[str, str]) -> tuple[str, str, str, str]:
     return provider, api_key, base_url, model
 
 
-class LLMManager:
+class AIProviderManager:
     """Manages LLM providers with retry, fallback, and failure handling.
 
     Usage:
-        manager = LLMManager()
+        manager = AIProviderManager()
         manager.configure()
         response = await manager.generate(messages)
         if response.error:
@@ -165,6 +169,8 @@ class LLMManager:
         self._providers: dict[str, LLMProvider] = {}
         self._active_provider: str = ""
         self._active_model: str = ""
+        self._fast_model: str = ""
+        self._reasoning_model: str = ""
         self._fallback_provider: str = ""
         self._fallback_model: str = ""
         self._max_retries: int = 2
@@ -173,6 +179,9 @@ class LLMManager:
     def configure(self) -> None:
         """Configure providers from environment variables."""
         provider_name, api_key, base_url, model = _detect_provider_from_env(self._env)
+        
+        self._fast_model = self._env.get("DEMOGORGON_FAST_MODEL", model)
+        self._reasoning_model = self._env.get("DEMOGORGON_REASONING_MODEL", model)
 
         self._max_retries = int(
             self._env.get("DEMOGORGON_LLM_MAX_RETRIES",
@@ -209,6 +218,8 @@ class LLMManager:
         api_key: str = "",
         base_url: str = "",
         model: str = "",
+        fast_model: str = "",
+        reasoning_model: str = "",
         fallback_provider: str = "",
         fallback_api_key: str = "",
         fallback_base_url: str = "",
@@ -231,6 +242,9 @@ class LLMManager:
             base_url = defaults.get("base_url", "")
         if not model:
             model = defaults.get("model", "")
+            
+        self._fast_model = fast_model or model
+        self._reasoning_model = reasoning_model or model
 
         self._configure_provider(provider, api_key, base_url, model)
 
@@ -354,6 +368,20 @@ class LLMManager:
         if not self._active_provider:
             self.configure()
         return self._active_provider in self._providers
+
+    @property
+    def fast_model(self) -> str:
+        """Get the model configured for fast, structured tasks."""
+        if not self._active_provider:
+            self.configure()
+        return self._fast_model or self._active_model
+
+    @property
+    def reasoning_model(self) -> str:
+        """Get the model configured for deep reasoning tasks."""
+        if not self._active_provider:
+            self.configure()
+        return self._reasoning_model or self._active_model
 
     async def generate(
         self,
@@ -554,3 +582,6 @@ class LLMManager:
             ],
             "max_retries": self._max_retries,
         }
+
+LLMManager = AIProviderManager
+

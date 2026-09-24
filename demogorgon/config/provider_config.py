@@ -339,8 +339,17 @@ class ProviderConfigManager:
         active = self.get_active_profile()
         if active:
             env["DEMOGORGON_PROVIDER"] = active.provider
+            env["DEMOGORGON_LLM_PROVIDER"] = active.provider
             if active.selected_model:
                 env["DEMOGORGON_MODEL"] = active.selected_model
+            if active.fast_model:
+                env["DEMOGORGON_FAST_MODEL"] = active.fast_model
+            if active.reasoning_model:
+                env["DEMOGORGON_REASONING_MODEL"] = active.reasoning_model
+            elif active.selected_model:
+                env.setdefault("DEMOGORGON_REASONING_MODEL", active.selected_model)
+            if active.base_url:
+                env["DEMOGORGON_BASE_URL"] = active.base_url
 
         return env
 

@@ -28,11 +28,14 @@ from demogorgon.controller.executive import ExecutiveController, Hypothesis
 from demogorgon.controller.execution_graph import ExecutionGraph
 from demogorgon.controller.self_evaluator import SelfEvaluator
 from demogorgon.controller.tool_selection import get_executor_spec
-from demogorgon.llm.manager import LLMManager
+from demogorgon.llm.manager import AIProviderManager
 from demogorgon.tools.http_client import HTTPClient
 from demogorgon.tools.browser import BrowserTool
 from demogorgon.memory import Memory
 from demogorgon.research_loop import ResearchLoop, LoopConfig
+from demogorgon.core.decision_trace import DecisionTrace
+from demogorgon.tools.manager import create_default_tool_manager
+from demogorgon.laya.engine import LayaEngine
 
 console = Console()
 
@@ -52,7 +55,7 @@ class ResearcherV3:
         self.controller = ExecutiveController()
         self.graph = ExecutionGraph()
         self.evaluator = SelfEvaluator()
-        self.llm_manager = LLMManager()
+        self.llm_manager = AIProviderManager()
         rps = config.requests_per_second
         self.http = HTTPClient(proxy=config.proxy, rps=rps)
         self.memory = Memory(self.target_url, self.output_dir)
@@ -63,6 +66,19 @@ class ResearcherV3:
             excluded_hosts=config.excluded_hosts,
         )
 
+        # Laya + ToolManager
+        self.decision_trace = DecisionTrace()
+        self.tool_manager = create_default_tool_manager()
+        try:
+            self.llm_manager.configure()
+        except Exception:
+            pass
+        self.laya = LayaEngine(
+            llm_manager=self.llm_manager,
+            config=config.laya,
+            trace=self.decision_trace,
+        )
+
         self._executors: dict[str, Any] = {}
         self._experiment_count = 0
         self._loop: ResearchLoop | None = None
@@ -71,12 +87,16 @@ class ResearcherV3:
         console.print(f"\n[bold green]Demogorgon — Autonomous Hunt on {self.target_url}[/bold green]\n")
 
         self.llm_manager.configure()
-        console.print(f"[cyan]LLM: {self.llm_manager._active_provider}/{self.llm_manager._active_model}[/cyan]")
+        console.print(
+            f"[cyan]LLM: {self.llm_manager._active_provider}/"
+            f"{self.llm_manager._active_model} "
+            f"(fast={self.llm_manager.fast_model})[/cyan]"
+        )
 
         self.browser = BrowserTool(headless=self.headless, proxy=self.proxy)
         await self.browser.launch()
 
-        # Create research loop from canonical config
+        # Create research loop from canonical config + Laya wiring
         loop_config = LoopConfig(
             max_experiments=self.config.max_experiments,
             self_eval_interval=self.config.self_eval_interval,
@@ -95,6 +115,10 @@ class ResearcherV3:
             browser_tool=self.browser,
             auth_manager=self._create_auth_manager(),
             config=loop_config,
+            hunt_config=self.config,
+            laya=self.laya,
+            decision_trace=self.decision_trace,
+            tool_manager=self.tool_manager,
         )
 
         # Run the research loop

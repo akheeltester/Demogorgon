@@ -7,22 +7,62 @@ Researcher, ResearcherV3, and CLI arg handling.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass
-class ResearchConfig:
-    """Centralized configuration for a Demogorgon hunt.
+class AIConfig:
+    provider: str = ""
+    api_key: str = ""
+    base_url: str = ""
+    model: str = ""
+    reasoning_model: str = ""
+    fast_model: str = ""
 
-    Every component reads from this object. The CLI builds one,
-    then passes it to Researcher which threads it through to
-    ResearchLoop, HTTPClient, BrowserTool, etc.
-    """
 
-    # ── Target ───────────────────────────────────────────────────────
+@dataclass
+class LayaConfig:
+    enabled: bool = True
+    confidence_threshold: float = 0.75
+    fallback_to_llm: bool = True
+
+
+@dataclass
+class SafetyConfig:
+    strict_scope: bool = True
+    require_authorization: bool = True
+    hitl_level: str = "AUTOMATIC"
+
+
+@dataclass
+class ToolsConfig:
+    nmap_enabled: bool = False
+    nuclei_enabled: bool = True
+    ffuf_enabled: bool = True
+    subfinder_enabled: bool = False
+    httpx_enabled: bool = False
+    burp_enabled: bool = False
+    nessus_enabled: bool = False
+
+
+@dataclass
+class DemogorgonConfig:
+    """Centralized configuration for a Demogorgon hunt."""
+
+    # ── Target & Auth ────────────────────────────────────────────────
     target_url: str = ""
+    authorization_confirmed: bool = False
+    
+    # ── Sub-configs ──────────────────────────────────────────────────
+    ai: AIConfig = field(default_factory=AIConfig)
+    laya: LayaConfig = field(default_factory=LayaConfig)
+    safety: SafetyConfig = field(default_factory=SafetyConfig)
+    tools: ToolsConfig = field(default_factory=ToolsConfig)
 
     # ── Execution controls ───────────────────────────────────────────
     max_experiments: int = 50
+    max_requests: int = 500
+    max_cost: float = 2.0
     rate_limit_delay: float = 1.0          # seconds between requests
     headless: bool = True
     proxy: str | None = None
@@ -44,14 +84,17 @@ class ResearchConfig:
     use_v3: bool = False
     benchmark: bool = False
 
-    # ── Derived helpers ──────────────────────────────────────────────
     @property
     def requests_per_second(self) -> float:
         """Convert delay-between-requests to requests-per-second."""
         return 1.0 / max(self.rate_limit_delay, 0.1)
 
-    def with_overrides(self, **kwargs) -> ResearchConfig:
+    def with_overrides(self, **kwargs) -> DemogorgonConfig:
         """Return a copy with selected fields overridden."""
         import dataclasses
         changes = {k: v for k, v in kwargs.items() if k in {f.name for f in dataclasses.fields(self)}}
         return dataclasses.replace(self, **changes)
+
+
+# Alias for backward compatibility
+ResearchConfig = DemogorgonConfig
