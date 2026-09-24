@@ -85,6 +85,9 @@ datasets/
 # ── Legacy (development history, not part of core tool) ────────────────────
 legacy/
 
+# ── Per-target VAPT reports (not part of Demogorgon core) ──────────────────
+KeralaStay/
+
 # ── Scratch / Test Data ─────────────────────────────────────────────────────
 scratch/
 *.tmp
