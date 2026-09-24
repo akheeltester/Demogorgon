@@ -9,6 +9,7 @@ __all__ = [
     "Crawler", "Checkpoint", "ToolBus", "Recon",
     "NucleiBridge", "FfufBridge", "KatanaBridge", "AmassBridge",
     "Reporter", "Notifier",
+    "ParallelExecutor", "ToolInstaller",
 ]
 
 
@@ -52,4 +53,10 @@ def __getattr__(name: str):
     elif name == "Notifier":
         from demogorgon.tools.notifier import Notifier
         return Notifier
+    elif name == "ParallelExecutor":
+        from demogorgon.tools.parallel import ParallelExecutor
+        return ParallelExecutor
+    elif name == "ToolInstaller":
+        from demogorgon.tools.installer import ToolInstaller
+        return ToolInstaller
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

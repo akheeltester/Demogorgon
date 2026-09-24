@@ -25,6 +25,9 @@ from demogorgon.app_model import (
 from demogorgon.memory import Memory, Finding, Hypothesis, Severity
 from demogorgon.reasoning_trace import ReasoningTrace
 from demogorgon.controller.self_evaluator import SelfEvaluator
+from demogorgon.core.metrics import MetricsCollector
+from demogorgon.core.cvss import score_finding_cvss
+from demogorgon.core.poc import generate_poc_from_finding, render_poc_markdown
 
 console = Console()
 
@@ -118,6 +121,10 @@ class ResearchLoop:
         browser_tool,
         auth_manager,
         config: LoopConfig | None = None,
+        hunt_config: Any | None = None,
+        laya: Any | None = None,
+        decision_trace: Any | None = None,
+        tool_manager: Any | None = None,
     ):
         self.target_url = target_url
         self.llm_complete = llm_complete
@@ -132,6 +139,51 @@ class ResearchLoop:
         self.reasoning = ReasoningTrace()
         self.evaluator = SelfEvaluator()
         self.state = LoopState()
+
+        # DemogorgonConfig (Laya, AI, Safety, Tools) — single source of truth
+        from demogorgon.core.config import DemogorgonConfig
+        if hunt_config is not None:
+            self.hunt_config = hunt_config
+        else:
+            self.hunt_config = DemogorgonConfig(
+                target_url=target_url,
+                max_experiments=self.config.max_experiments,
+                rate_limit_delay=self.config.rate_limit_delay,
+                self_eval_interval=self.config.self_eval_interval,
+                stagnation_threshold=self.config.stagnation_threshold,
+                max_duplicate_actions=self.config.max_duplicate_actions,
+                max_same_endpoint=self.config.max_same_endpoint,
+                max_same_vuln_class=self.config.max_same_vuln_class,
+                context_window_limit=self.config.context_window_limit,
+            )
+
+        # Decision trace + Laya decision engine
+        from demogorgon.core.decision_trace import DecisionTrace
+        from demogorgon.laya.engine import LayaEngine
+
+        self.decision_trace = decision_trace or DecisionTrace()
+        if laya is not None:
+            self.laya = laya
+        else:
+            try:
+                from demogorgon.llm.manager import AIProviderManager
+                ai_manager = AIProviderManager()
+                ai_manager.configure()
+                self.laya = LayaEngine(
+                    llm_manager=ai_manager,
+                    config=self.hunt_config.laya,
+                    trace=self.decision_trace,
+                )
+            except Exception as e:
+                console.print(f"[yellow]Laya engine unavailable ({e}) — using deterministic fallbacks[/yellow]")
+                self.laya = None
+
+        # Tool manager (structured security tool adapters)
+        from demogorgon.tools.manager import create_default_tool_manager
+        if tool_manager is not None:
+            self.tool_manager = tool_manager
+        else:
+            self.tool_manager = create_default_tool_manager()
 
         # V3 controller components
         from demogorgon.controller.executive import ExecutiveController
@@ -163,6 +215,13 @@ class ResearchLoop:
         # Finding scores — tracks all scored findings for report
         self._finding_scores: list[dict[str, Any]] = []
 
+        # Metrics collector (discovery/testing/findings rates)
+        self.metrics = MetricsCollector(target=target_url)
+
+        # Parallel executor (concurrent request batches)
+        from demogorgon.tools.parallel import ParallelExecutor
+        self.parallel = ParallelExecutor(max_concurrency=10)
+
         # Canonical scope validator
         from demogorgon.core.scope_legacy import ScopeValidator
         self._scope_validator = ScopeValidator(target_url)
@@ -173,6 +232,10 @@ class ResearchLoop:
 
         # Deterministic executors (lazy loaded)
         self._executors: dict[str, Any] = {}
+
+        # Laya decision bookkeeping
+        self._last_decision_id: str = ""
+        self._laya_stop_requested: bool = False
 
     # ============================================================
     # Main Loop
@@ -193,16 +256,16 @@ class ResearchLoop:
         )
 
         try:
-            # Phase 1: Understand
+            # Phase 1: Understand & Discover
             await self._phase_understand()
 
             # Phase 2: Model
             await self._phase_model()
 
-            # Phase 3-N: Reason → Experiment → Observe → Adapt
+            # Phase 3: Laya Prioritize -> Hypothesize -> Execute -> Observe -> Validate -> Adapt
             await self._phase_reason_experiment_cycle()
 
-            # Final: Validate and Report
+            # Final: Chain and Report
             self._save_checkpoint()
             return self._generate_report()
 
@@ -262,6 +325,9 @@ class ResearchLoop:
 
         # Discover and parse OpenAPI/Swagger specs
         await self._discover_openapi_specs()
+
+        # Enumerate subdomains (scope-aware) and probe live hosts
+        await self._enumerate_subdomains()
 
         try:
             admin_paths = await self.browser.discover_admin_paths(self.target_url)
@@ -345,6 +411,75 @@ class ResearchLoop:
 
         # Run IDOR object discovery if we have multiple auth sessions
         await self._discover_idor_objects()
+
+    async def _enumerate_subdomains(self):
+        """Enumerate subdomains for the target domain and add in-scope live hosts."""
+        from urllib.parse import urlparse
+        domain = urlparse(self.target_url).hostname or ""
+        # Extract registrable-ish base (strip port, take last 2 labels for simple domains)
+        if not domain or domain.count(".") < 1:
+            return
+        # Prefer the rightmost two labels as base domain (example.com)
+        parts = domain.split(".")
+        base_domain = ".".join(parts[-2:]) if len(parts) >= 2 else domain
+
+        console.print(f"[cyan]Enumerating subdomains for {base_domain}...[/cyan]")
+        try:
+            from demogorgon.tools.tool_bus import ToolBus
+            from demogorgon.tools.recon import Recon
+            bus = ToolBus()
+            recon = Recon(self.http, bus)
+            result = await recon.discover_subdomains(base_domain)
+        except Exception as e:
+            console.print(f"[yellow]Subdomain enumeration failed: {e}[/yellow]")
+            return
+
+        subs = result.get("subdomains", [])
+        self.metrics.metrics.subdomains_discovered = len(subs)
+        if not subs:
+            console.print("[dim]No subdomains found[/dim]")
+            return
+
+        # Scope filter + add as endpoints
+        added = 0
+        for sub in subs:
+            for scheme in ("https", "http"):
+                url = f"{scheme}://{sub}"
+                if self._in_scope(url):
+                    self.memory.add_endpoint(url, method="GET")
+                    added += 1
+
+        # Probe live hosts in parallel
+        if subs:
+            probe_urls = []
+            for sub in subs[:50]:
+                probe_urls.append(f"https://{sub}")
+            try:
+                batch = await self.parallel.probe_endpoints(
+                    self.http, probe_urls, timeout=30.0,
+                )
+                self.metrics.record_parallel(len(probe_urls))
+                live = 0
+                for r in batch.results:
+                    data = r.get("data") or {}
+                    status = data.get("status_code", 0)
+                    url = data.get("url") or ""
+                    if status and self._in_scope(url):
+                        self.memory.add_endpoint(
+                            url, method="GET",
+                            status_code=status,
+                            response_length=len(data.get("body", "")),
+                        )
+                        live += 1
+                self.metrics.metrics.live_hosts = live
+                console.print(
+                    f"[green]Subdomains: {len(subs)} found, "
+                    f"{live} live, {added} endpoints added[/green]"
+                )
+            except Exception as e:
+                console.print(f"[yellow]Live host probe failed: {e}[/yellow]")
+        else:
+            console.print(f"[green]Subdomains: {len(subs)} found, {added} endpoints added[/green]")
 
     async def _discover_idor_objects(self):
         """Discover objects for IDOR testing using authcore."""
@@ -844,8 +979,18 @@ RESPOND WITH VALID JSON:
     # ============================================================
 
     async def _phase_reason_experiment_cycle(self):
-        """The core loop: reason, experiment, observe, adapt."""
-        console.print("\n[bold cyan]Phase 3: Reason → Experiment → Observe → Adapt[/bold cyan]")
+        """The core loop: Laya prioritize → reason → experiment → observe → adapt."""
+        console.print("\n[bold cyan]Phase 3: Laya Prioritize → Hypothesize → Execute → Observe → Validate → Adapt[/bold cyan]")
+
+        # Discover available tool adapters once (wires ToolManager into the loop)
+        if self.tool_manager and self.tool_manager._adapters:
+            try:
+                discovered = await self.tool_manager.discover_all()
+                available = [n for n, ok in discovered.items() if ok]
+                if available:
+                    console.print(f"[dim]ToolManager ready: {', '.join(available)}[/dim]")
+            except Exception as e:
+                console.print(f"[yellow]ToolManager discovery failed: {e}[/yellow]")
 
         while self.state.experiment_count < self.config.max_experiments:
             # Self-evaluate every 20 experiments
@@ -861,6 +1006,11 @@ RESPOND WITH VALID JSON:
                 console.print("[yellow]Stagnation detected — pivoting strategy[/yellow]")
                 self.state.strategy = "pivot"
                 self.state.stagnation_count = 0
+
+            # Laya: fast structured decision (strategy / continue / stop)
+            if not await self._laya_prioritize_step():
+                console.print("[yellow]Laya requested stop — ending research cycle[/yellow]")
+                break
 
             # Reason: what should I test next?
             console.print(f"\n[bold blue]=== Experiment {self.state.experiment_count + 1}/{self.config.max_experiments} ===[/bold blue]")
@@ -880,8 +1030,141 @@ RESPOND WITH VALID JSON:
             # Adapt: update strategy based on results
             self._adapt(result)
 
+            # Laya: triage any new findings from this experiment
+            await self._laya_triage_findings(result)
+
+            # Close the loop on the decision that selected this experiment
+            self._close_decision_trace(result)
+
             # Rate limit protection
             await asyncio.sleep(self.config.rate_limit_delay)
+
+    async def _laya_prioritize_step(self) -> bool:
+        """Run Laya strategy + continue/stop decisions.
+
+        Returns False if the loop should stop.
+        """
+        if self.laya is None:
+            return True
+        if not getattr(self.hunt_config, "laya", None) or not self.hunt_config.laya.enabled:
+            return True
+
+        context = {
+            "endpoints": len(self.memory.endpoints),
+            "tested_actions": len(self.state.tested_actions),
+            "findings": self.state.finding_count,
+            "experiments": self.state.experiment_count,
+            "max_experiments": self.config.max_experiments,
+            "current_strategy": self.state.strategy,
+            "stagnation": self.state.stagnation_count,
+            "duplicate_streak": self.state.duplicate_streak,
+            "failed_hypotheses": len(self.state.failed_hypotheses),
+            "runtime_seconds": self.state.runtime_seconds,
+        }
+
+        try:
+            strategy_decision = await self.laya.select_strategy(
+                context, state_version=self.state.experiment_count
+            )
+            self._last_decision_id = strategy_decision.get("decision_id", "")
+            selected = strategy_decision.get("selected", self.state.strategy)
+
+            # Map Laya strategy vocabulary → LoopState strategy
+            strategy_map = {
+                "recon": "explore",
+                "explore": "explore",
+                "focused": "validate",
+                "validate": "validate",
+                "chain": "exploit",
+                "pivot": "pivot",
+                "stop": "stop",
+            }
+            mapped = strategy_map.get(selected, self.state.strategy)
+            if mapped != "stop" and mapped != self.state.strategy:
+                console.print(
+                    f"[magenta]Laya strategy → {mapped} "
+                    f"(conf={strategy_decision.get('confidence', 0):.0%}, "
+                    f"src={strategy_decision.get('source')})[/magenta]"
+                )
+                self.state.strategy = mapped
+            if selected == "stop" or mapped == "stop":
+                return False
+
+            # Periodic continue/stop check (every experiment after the first)
+            if self.state.experiment_count > 0:
+                stop_decision = await self.laya.continue_or_stop(
+                    context, state_version=self.state.experiment_count
+                )
+                if stop_decision.get("selected") == "stop":
+                    return False
+                if stop_decision.get("selected") == "pause":
+                    console.print("[yellow]Laya requested pause[/yellow]")
+                    return False
+
+            # Prioritize next target when we have candidates
+            if len(self.memory.endpoints) >= 2:
+                candidates = [
+                    {"id": ep, "url": ep}
+                    for ep in list(self.memory.endpoints)[:20]
+                    if ep not in self.state.tested_actions
+                ][:10]
+                if candidates:
+                    target_decision = await self.laya.prioritize_target(
+                        candidates, state_version=self.state.experiment_count
+                    )
+                    preferred = target_decision.get("selected")
+                    if preferred:
+                        console.print(
+                            f"[magenta]Laya preferred target: {preferred} "
+                            f"(conf={target_decision.get('confidence', 0):.0%})[/magenta]"
+                        )
+
+            return True
+        except Exception as e:
+            console.print(f"[yellow]Laya prioritize step failed: {e}[/yellow]")
+            return True
+
+    async def _laya_triage_findings(self, result: Any) -> None:
+        """Triage findings produced by an experiment via Laya."""
+        if self.laya is None or not getattr(result, "findings", None):
+            return
+        if not getattr(self.hunt_config, "laya", None) or not self.hunt_config.laya.enabled:
+            return
+
+        for finding in result.findings[:3]:
+            try:
+                triage = await self.laya.triage_finding(
+                    finding, state_version=self.state.experiment_count
+                )
+                action = triage.get("selected", "validate")
+                if action == "ignore":
+                    console.print(f"[dim]Laya triage: ignore {finding.get('title', '')}[/dim]")
+                elif action in ("escalate", "report_candidate"):
+                    console.print(
+                        f"[red]Laya triage: {action} — {finding.get('title', '')} "
+                        f"(conf={triage.get('confidence', 0):.0%})[/red]"
+                    )
+            except Exception as e:
+                console.print(f"[yellow]Laya triage failed: {e}[/yellow]")
+                break
+
+    def _close_decision_trace(self, result: Any) -> None:
+        """Attach experiment outcome to the last Laya decision."""
+        if not self._last_decision_id or not self.decision_trace:
+            return
+        try:
+            findings = getattr(result, "findings", []) or []
+            error = getattr(result, "error", None)
+            outcome = "finding" if findings else ("error" if error else "no_finding")
+            self.decision_trace.update_result(
+                self._last_decision_id,
+                tool_executed=getattr(result, "executor", ""),
+                result=(f"{len(findings)} finding(s)" if findings else (error or "ok")),
+                outcome=outcome,
+            )
+        except Exception:
+            pass
+        self._last_decision_id = ""
 
     async def _reason_next_action(self) -> dict[str, Any] | None:
         """Ask the LLM what to test next."""
@@ -1018,6 +1301,8 @@ RESPOND WITH VALID JSON:
                 result = await self._execute_replay(action)
             elif tool == "browser":
                 result = await self._execute_browser(action)
+            elif self.tool_manager and self.tool_manager.get_adapter(tool):
+                result = await self._execute_tool_manager(tool, action, vuln_class)
             else:
                 result = {"error": f"Unknown tool: {tool}"}
 
@@ -1051,6 +1336,21 @@ RESPOND WITH VALID JSON:
         if not error and vuln_class in ("idor", "access_control", "privilege_escalation", "role_bypass"):
             authcore_findings = await self._run_authcore_testing(endpoint, action, vuln_class)
             findings.extend(authcore_findings)
+
+        # Run deterministic executors for SSRF / file upload / other classes
+        if not error:
+            exec_findings = await self._run_deterministic_executor(vuln_class, endpoint, action)
+            findings.extend(exec_findings)
+
+        # Track metrics
+        self.metrics.metrics.experiments_run = self.state.experiment_count
+        if vuln_class and vuln_class != "unknown":
+            self.metrics.metrics.vuln_classes_tested.add(vuln_class)
+        self.metrics.metrics.unique_actions_tested = len(self.state.tested_actions)
+        self.metrics.metrics.endpoints_discovered = len(self.memory.endpoints)
+        self.metrics.metrics.requests_made += 1
+        if tool and tool not in ("http", "replay", "browser"):
+            self.metrics.record_tool(tool)
 
         # Track tested action
         action_key = f"{tool} {action.get('method', 'GET')} {endpoint}"
@@ -1163,6 +1463,88 @@ RESPOND WITH VALID JSON:
 
         self._finding_scores.append(score.to_dict())
         return finding
+
+    async def _run_deterministic_executor(
+        self, vuln_class: str, endpoint: str, action: dict,
+    ) -> list[dict[str, Any]]:
+        """Load and run the deterministic executor for a vuln class (SSRF, upload, etc.)."""
+        if not vuln_class or vuln_class == "unknown":
+            return []
+        # Alias mapping so LLM can say "ssrf" or "file_upload" etc.
+        aliases = {
+            "ssrf": "ssrf_tester",
+            "file_upload": "upload_tester",
+            "unrestricted_upload": "upload_tester",
+            "path_traversal_upload": "upload_tester",
+        }
+        executor_name = aliases.get(vuln_class)
+        if not executor_name:
+            from demogorgon.controller.tool_selection import get_executor_spec
+            spec = get_executor_spec(vuln_class)
+            if not spec:
+                return []
+            executor_name = spec.name
+
+        from demogorgon.controller.tool_selection import get_executor_by_name
+        spec = get_executor_by_name(executor_name)
+        if not spec:
+            return []
+
+        try:
+            import importlib
+            mod = importlib.import_module(spec.module_path)
+            cls = getattr(mod, spec.class_name)
+            executor = cls()
+        except Exception as e:
+            console.print(f"[yellow]Executor load failed ({executor_name}): {e}[/yellow]")
+            return []
+
+        # Detect param for SSRF from action / URL query
+        param_name = action.get("parameter") or action.get("param") or "url"
+        if vuln_class == "ssrf":
+            from urllib.parse import urlparse, parse_qs
+            qs = parse_qs(urlparse(endpoint).query)
+            if qs:
+                param_name = next(iter(qs.keys()))
+
+        console.print(f"[cyan]Running executor {executor.name} on {endpoint}...[/cyan]")
+        try:
+            result = await executor.test(
+                endpoint,
+                http_client=self.http,
+                headers=action.get("headers", {}),
+                param_name=param_name,
+            )
+        except Exception as e:
+            console.print(f"[yellow]Executor {executor.name} failed: {e}[/yellow]")
+            return []
+
+        findings = result.get("findings", [])
+        for f in findings:
+            # Normalize type key used by detectors
+            if "type" not in f:
+                f["type"] = f.get("vuln_class", vuln_class)
+            if "method" not in f:
+                f["method"] = action.get("method", "GET")
+            self.metrics.record_finding(
+                f.get("severity", "info"), f.get("vuln_class", vuln_class),
+                f.get("confidence", 0),
+            )
+            # Persist into memory
+            self.memory.add_finding(
+                title=f.get("title", "Finding"),
+                severity=f.get("severity", "info"),
+                vuln_class=f.get("vuln_class", vuln_class),
+                endpoint=f.get("endpoint", endpoint),
+                method=f.get("method", action.get("method", "GET")),
+                evidence=f.get("evidence", ""),
+                reproduction=f.get("steps", []) if isinstance(f.get("steps"), list) else [],
+                impact=f.get("impact", ""),
+                confidence=f.get("confidence", 0.5),
+            )
+        if findings:
+            console.print(f"[bold red]Executor {executor.name}: {len(findings)} finding(s)[/bold red]")
+        return findings
 
     async def _execute_http(self, action: dict) -> dict[str, Any]:
         """Execute an HTTP request."""
@@ -1424,6 +1806,48 @@ RESPOND WITH VALID JSON:
             return {"status_code": 200, "body": content[:5000], "headers": {}, "elapsed": 0, "findings": [], "evidence": []}
         else:
             return {"error": f"Unknown browser action: {action_type}"}
+
+    async def _execute_tool_manager(self, tool: str, action: dict, vuln_class: str = "") -> dict[str, Any]:
+        """Execute a registered ToolManager adapter (subfinder, nuclei, ffuf, etc.)."""
+        tool_action = action.get("tool_action") or action.get("action") or "enumerate"
+        params = {
+            k: v
+            for k, v in action.items()
+            if k not in ("tool", "tool_action", "action", "reason")
+        }
+        if "domain" not in params:
+            from urllib.parse import urlparse
+            host = urlparse(action.get("url", self.target_url)).hostname or ""
+            if host:
+                params.setdefault("domain", host)
+                params.setdefault("target", action.get("url", self.target_url))
+
+        console.print(f"[cyan]ToolManager → {tool}.{tool_action}({params})[/cyan]")
+        result = await self.tool_manager.execute(tool, tool_action, params)
+
+        findings: list[dict[str, Any]] = []
+        evidence: list[dict[str, Any]] = [dict(result)]
+        if result.get("success") and result.get("items"):
+            for item in result["items"]:
+                if isinstance(item, dict) and item.get("finding"):
+                    findings.append({
+                        "title": str(item["finding"]),
+                        "severity": item.get("severity", "info"),
+                        "type": vuln_class or tool,
+                        "vuln_class": vuln_class or tool,
+                        "endpoint": params.get("url") or params.get("domain") or params.get("target", ""),
+                        "evidence": [item],
+                    })
+
+        return {
+            "status_code": 200 if result.get("success") else 0,
+            "body": json.dumps(result.get("data", {}), default=str)[:5000],
+            "headers": {},
+            "elapsed": 0,
+            "findings": findings,
+            "evidence": evidence,
+            "error": result.get("error") if not result.get("success") else None,
+        }
 
     # ============================================================
     # Observe & Adapt
@@ -1730,8 +2154,10 @@ RESPOND WITH VALID JSON:
 
         try:
             response = await self.llm_complete(messages, response_format={"type": "json_object"})
+            self.metrics.record_llm(success=True)
             return response
         except Exception as e:
+            self.metrics.record_llm(success=False)
             console.print(f"[red]LLM error: {e}[/red]")
             return None
 
@@ -1748,6 +2174,43 @@ RESPOND WITH VALID JSON:
         reportable = [s for s in self._finding_scores if s.get("should_report")]
         low_conf = [s for s in self._finding_scores if not s.get("should_report")]
 
+        # Finalize metrics
+        self.metrics.mark_end()
+        self.metrics.metrics.experiments_run = self.state.experiment_count
+        self.metrics.metrics.endpoints_discovered = len(self.memory.endpoints)
+        # findings_total / by_severity already recorded as findings arrive
+        if not self.metrics.metrics.findings_total:
+            self.metrics.metrics.findings_total = len(findings)
+            for f in findings:
+                sev = getattr(f.severity, "value", str(f.severity))
+                self.metrics.record_finding(sev, f.vuln_class, f.confidence)
+        try:
+            metrics_path = self.metrics.save("hunt_output/metrics.json")
+        except Exception:
+            metrics_path = None
+
+        # Enhance findings with CVSS + PoC for report
+        from demogorgon.core.cvss import enhance_finding_with_cvss
+        enriched_findings = []
+        for f in findings:
+            d = {
+                "title": f.title,
+                "severity": getattr(f.severity, "value", str(f.severity)),
+                "vuln_class": f.vuln_class,
+                "endpoint": f.endpoint,
+                "method": f.method,
+                "evidence": f.evidence,
+                "reproduction": f.reproduction,
+                "impact": f.impact,
+                "confidence": f.confidence,
+            }
+            enhance_finding_with_cvss(d)
+            try:
+                d["poc"] = generate_poc_from_finding(d)
+            except Exception:
+                d["poc"] = None
+            enriched_findings.append(d)
+
         console.print(f"\n[bold green]Research Loop Complete[/bold green]")
         console.print(f"  Target: {self.target_url}")
         console.print(f"  Runtime: {runtime:.0f}s")
@@ -1756,8 +2219,11 @@ RESPOND WITH VALID JSON:
         console.print(f"  Reportable (>=85%): {len(reportable)}")
         console.print(f"  Below threshold: {len(low_conf)}")
         console.print(f"  Endpoints: {len(self.memory.endpoints)}")
+        console.print(f"  Subdomains: {self.metrics.metrics.subdomains_discovered}")
         console.print(f"  Business Objects: {len(self.app_model.business_objects)}")
         console.print(f"  Trust Boundaries: {len(self.app_model.trust_boundaries)}")
+        if metrics_path:
+            console.print(f"  Metrics: {metrics_path}")
 
         if reportable:
             console.print("\n[bold red]=== REPORTABLE FINDINGS ===[/bold red]")
@@ -1779,21 +2245,9 @@ RESPOND WITH VALID JSON:
             "experiments": self.state.experiment_count,
             "findings": len(findings),
             "reportable_count": len(reportable),
-            "finding_details": [
-                {
-                    "title": f.title,
-                    "severity": f.severity.value,
-                    "vuln_class": f.vuln_class,
-                    "endpoint": f.endpoint,
-                    "method": f.method,
-                    "evidence": f.evidence,
-                    "reproduction": f.reproduction,
-                    "impact": f.impact,
-                    "confidence": f.confidence,
-                }
-                for f in findings
-            ],
+            "finding_details": enriched_findings,
             "scored_findings": self._finding_scores,
+            "metrics": self.metrics.metrics.to_dict(),
             "endpoints_discovered": len(self.memory.endpoints),
             "business_objects": len(self.app_model.business_objects),
             "trust_boundaries": len(self.app_model.trust_boundaries),
@@ -1815,4 +2269,17 @@ RESPOND WITH VALID JSON:
                 for c in self.chain_finder.get_reportable_chains()
             ],
             "attack_graph": self.attack_graph.get_summary(),
+            "decision_trace": self.decision_trace.get_traces() if self.decision_trace else [],
+            "laya": {
+                "enabled": bool(
+                    getattr(self.hunt_config, "laya", None)
+                    and self.hunt_config.laya.enabled
+                    and self.laya is not None
+                ),
+                "confidence_threshold": getattr(
+                    getattr(self.hunt_config, "laya", None), "confidence_threshold", 0.0
+                ),
+                "decisions_recorded": len(self.decision_trace._decisions) if self.decision_trace else 0,
+            },
+            "tools_registered": list(self.tool_manager._adapters.keys()) if self.tool_manager else [],
         }
