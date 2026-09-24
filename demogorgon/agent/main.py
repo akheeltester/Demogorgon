@@ -363,19 +363,28 @@ class AgentMain:
     async def _input_loop(self):
         """Listen for user input in the background."""
         from rich.console import Console
-        _console = Console()
+        from demogorgon.cli.theme import console as themed
+
+        _console = themed
 
         # Show initial help
-        _console.print("\n[bold cyan]Commands:[/] /help /status /findings /pause /resume /stop /model /scope /evidence /report")
-        _console.print("[dim]Type naturally or use /commands. Ctrl+C to stop.[/dim]\n")
+        _console.print(
+            "\n[header]Commands:[/] "
+            "[cyan]/help /status /findings /pause /resume /stop /model /scope /evidence /report[/cyan]"
+        )
+        _console.print(
+            "[muted]Type naturally or use /commands. Ctrl+C to stop.[/muted]\n"
+        )
 
         loop = asyncio.get_event_loop()
-        prompt = "\n[bold green]demogorgon>[/bold green] "
+        # Plain prompt for input(); themed Console prints the prompt label first
+        prompt_label = "\n[success]demogorgon❯[/success] "
 
         while self.session and self.session.is_running:
             try:
-                # Run input() in a thread to not block the event loop
-                line = await loop.run_in_executor(None, lambda: input(prompt))
+                # Print themed prompt via Console, then read raw line
+                _console.print(prompt_label, markup=True, highlight=False)
+                line = await loop.run_in_executor(None, lambda: input())
 
                 if not line.strip():
                     continue
@@ -384,7 +393,7 @@ class AgentMain:
                 state = self.session.get_state()
                 result = await self.session.commands.process(line.strip(), state)
 
-                # Print result
+                # Print result — use plain markup-safe console
                 if result.success:
                     _console.print(result.message, style="green")
                 else:

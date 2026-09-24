@@ -82,7 +82,7 @@ async def run_setup_wizard(existing_config_only: bool = False) -> ProviderProfil
     # ── Step 1: Choose provider ──────────────────────────────────
 
     console.print()
-    console.print(Panel("[bold]DEMOGOORGON[/] — Configure AI Provider", border_style="blue"))
+    console.print(Panel("[bold]DEMOGORGON[/] — Configure AI Provider", border_style="cyan"))
 
     providers = list(PROVIDER_DISPLAY.keys())
     for i, prov in enumerate(providers, 1):

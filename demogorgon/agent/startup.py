@@ -480,15 +480,9 @@ def _ask_budget(config: SessionConfig) -> SessionConfig:
 
 
 def _print_banner():
-    """Print the agent startup banner."""
-    banner = """
-╭──────────────────────────────────────────────╮
-│ DEMOGORGON                                   │
-│ Autonomous Bug Bounty Research Agent         │
-│                                              │
-│ Authorized security research only            │
-╰──────────────────────────────────────────────╯"""
-    console.print(banner, style="bold cyan")
+    """Print the agent startup banner (shared theme)."""
+    from ..cli.theme import print_banner
+    print_banner(console)
 
 
 def _print_summary(config: SessionConfig):

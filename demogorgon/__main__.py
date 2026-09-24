@@ -76,6 +76,24 @@ def main():
         from demogorgon.agent.main import AgentMain
         agent = AgentMain()
         asyncio.run(agent.start_resume())
+    elif command == "findings":
+        from demogorgon.cli import cmd_findings
+        asyncio.run(cmd_findings())
+    elif command == "report":
+        from demogorgon.cli import cmd_report
+        asyncio.run(cmd_report())
+    elif command == "status":
+        from demogorgon.cli import cmd_status
+        asyncio.run(cmd_status())
+    elif command == "tools":
+        from demogorgon.cli import cmd_tools
+        sub = args[1] if len(args) > 1 else None
+        tool = args[2] if len(args) > 2 else None
+        asyncio.run(cmd_tools(sub, tool))
+    elif command == "metrics":
+        from demogorgon.cli import cmd_metrics
+        path = args[1] if len(args) > 1 else None
+        asyncio.run(cmd_metrics(path))
     else:
         # Treat as a target URL — launch agent directly
         target = command
@@ -160,32 +178,41 @@ def _cmd_web(extra_args: list[str]):
 
 def _print_help():
     """Print help message."""
-    from rich.console import Console
-    from rich.panel import Panel
+    from demogorgon.cli.theme import console, VERSION
 
-    console = Console()
-    help_text = """[bold]DEMOGOORGON[/] — Autonomous Security Research Agent
+    help_text = f"""[bold]DEMOGORGON[/bold] — Autonomous Security Research Agent  [muted]v{VERSION}[/muted]
 
 [bold]Usage:[/]
 
-  python -m demogorgon                     Launch interactive agent
-  python -m demogorgon <target>            Hunt a specific target
-  python -m demogorgon --resume            Resume saved session
-  python -m demogorgon --session <id>      Resume specific session
-  python -m demogorgon setup               Configure providers
-  python -m demogorgon providers           List configured providers
-  python -m demogorgon models [provider]   List available models
-  python -m demogorgon web                 Start web control center
-  python -m demogorgon doctor              Run diagnostics
+  [cyan]python -m demogorgon[/]                     Launch interactive agent
+  [cyan]python -m demogorgon <target>[/]            Hunt a specific target
+  [cyan]python -m demogorgon --resume[/]            Resume saved session
+  [cyan]python -m demogorgon --session <id>[/]      Resume specific session
+  [cyan]python -m demogorgon setup[/]               Configure providers
+  [cyan]python -m demogorgon providers[/]           List configured providers
+  [cyan]python -m demogorgon models [provider][/]   List available models
+  [cyan]python -m demogorgon web[/]                 Start web control center
+  [cyan]python -m demogorgon doctor[/]              Run diagnostics
+  [cyan]python -m demogorgon findings[/]            Show findings table
+  [cyan]python -m demogorgon report[/]              Generate report
+  [cyan]python -m demogorgon tools[/]               List/install security tools
+  [cyan]python -m demogorgon tools install[/]       Install missing tools
+  [cyan]python -m demogorgon metrics[/]             Show hunt metrics
 
 [bold]Examples:[/]
 
   python -m demogorgon
   python -m demogorgon https://lab.local
-  python -m demogorgon setup
-  python -m demogorgon web"""
+    python -m demogorgon setup
+  python -m demogorgon web
+  python -m demogorgon tools
+  python -m demogorgon metrics
 
-    console.print(Panel(help_text, border_style="blue"))
+[dim]Authorized testing only — stay in scope.[/dim]"""
+
+    from rich.panel import Panel
+
+    console.print(Panel(help_text, border_style="cyan", title="Demogorgon", title_align="left"))
 
 
 if __name__ == "__main__":

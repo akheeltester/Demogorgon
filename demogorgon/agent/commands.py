@@ -68,46 +68,48 @@ class CommandResult:
         }
 
 
-COMMAND_HELP = """
-╔══════════════════════════════════════════════════════════════╗
-║                    DEMOGORGON COMMANDS                       ║
-╠══════════════════════════════════════════════════════════════╣
-║ /help          Show this help message                        ║
-║ /status        Show agent status and stats                   ║
-║ /findings      List current findings                         ║
-║ /chains        List attack chains                            ║
-║ /evidence      Show evidence collected                       ║
-║ /targets       Show discovered targets                       ║
-║ /scope         Show current scope                            ║
-║ /scope-add     Add asset to scope                            ║
-║ /scope-remove  Remove asset from scope                       ║
-║ /tools         Show available tool capabilities              ║
-║ /mcp           Show MCP server status                        ║
-║ /model         Show/change current model                     ║
-║ /provider      Show/change current provider                  ║
-║ /pause         Pause the agent loop                          ║
-║ /resume        Resume the agent loop                         ║
-║ /stop          Stop the agent completely                     ║
-║ /strategy <s>  Force strategy (recon|explore|focused|        ║
-║                validate|exploit|chain)                       ║
-║ /focus <class> Focus on a specific vuln class                ║
-║ /budget        Show budget usage                             ║
-║ /cost          Show token/cost breakdown                     ║
-║ /trace         Show recent decision trace                    ║
-║ /history       Show full command history                     ║
-║ /report        Generate findings report                      ║
-║ /skip          Skip current action                           ║
-║ /override      Override safety (requires auth)               ║
-║ /log [n]       Show last N log entries                       ║
-║ /quit          Exit the agent                                ║
-╚══════════════════════════════════════════════════════════════╝
+COMMAND_HELP = """\
+[bold cyan]DEMOGORGON — Commands[/bold cyan]
 
-Natural language also works — just type what you want:
-  focus on XSS in /search
-  scan for IDOR on API endpoints
-  slow down, passive only
-  show findings
-  stop
+[bold]Navigation[/bold]
+  /help          Show this help message
+  /status        Show agent status and stats
+  /findings      List current findings
+  /chains        List attack chains
+  /evidence      Show evidence collected
+  /targets       Show discovered targets
+  /scope         Show current scope
+  /scope-add     Add asset to scope
+  /scope-remove  Remove asset from scope
+  /tools         Show available tool capabilities
+  /mcp           Show MCP server status
+  /model         Show/change current model
+  /provider      Show/change current provider
+
+[bold]Control[/bold]
+  /pause         Pause the agent loop
+  /resume        Resume the agent loop
+  /stop          Stop the agent completely
+  /strategy <s>  Force strategy (recon|explore|focused|validate|exploit|chain)
+  /focus <class> Focus on a specific vuln class
+  /skip          Skip current action
+  /quit          Exit the agent
+
+[bold]Info[/bold]
+  /budget        Show budget usage
+  /cost          Show token/cost breakdown
+  /trace         Show recent decision trace
+  /history       Show full command history
+  /report        Generate findings report
+  /log [n]       Show last N log entries
+  /override      Override safety (requires auth)
+
+[dim]Natural language also works — just type what you want:[/dim]
+  [cyan]focus on XSS in /search[/cyan]
+  [cyan]scan for IDOR on API endpoints[/cyan]
+  [cyan]slow down, passive only[/cyan]
+  [cyan]show findings[/cyan]
+  [cyan]stop[/cyan]
 """
 
 

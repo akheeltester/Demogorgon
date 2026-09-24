@@ -18,7 +18,6 @@ import sys
 import time
 from typing import Any
 
-from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -34,7 +33,7 @@ from .trace import ResearchTrace, TraceEntryType
 from .strategies import StrategyEngine
 from .commands import CommandProcessor
 
-console = Console()
+from ..cli.theme import console, print_banner as _print_banner, sev_style as _sev_style
 
 # Max events to show in the live feed
 MAX_LIVE_EVENTS = 30
@@ -157,7 +156,7 @@ class TerminalUI:
 
         return Panel(
             "\n".join(parts),
-            title="[bold cyan]DEMOGOORGON[/bold cyan]",
+            title="[brand]DEMOGORGON[/brand]",
             border_style="cyan",
             subtitle=f"[dim]{self._status}[/dim]",
             padding=(0, 1),
@@ -290,10 +289,10 @@ class TerminalUI:
     async def _on_finding(self, event: AgentEvent):
         title = event.data.get("title", "Untitled")
         severity = event.data.get("severity", "unknown")
-        sev_style = {"critical": "bold red", "high": "red", "medium": "yellow", "low": "cyan"}.get(severity, "white")
+        sev_style = _sev_style(severity)
         self._add_event("🎯", f"FINDING: {title} ({severity})", sev_style)
-        # Also print immediately for visibility
-        console.print(f"\n  [bold green]🎯 FINDING:[/bold green] [{sev_style}]{title}[/{sev_style}] ({severity})\n")
+        # Do NOT console.print during Live — would garble the frame.
+        # Events land in the live feed via _add_event above.
 
     async def _on_finding_validated(self, event: AgentEvent):
         title = event.data.get("title", "Untitled")
@@ -306,12 +305,10 @@ class TerminalUI:
     async def _on_safety_block(self, event: AgentEvent):
         reason = event.data.get("reason", "unknown")
         self._add_event("⛔", f"SAFETY BLOCK: {reason}", "red")
-        console.print(f"    [red]⛔ SAFETY BLOCK:[/red] {reason}")
 
     async def _on_hitl_request(self, event: AgentEvent):
         question = event.data.get("question", "Approval needed")
         self._add_event("⚠", f"HITL: {question}", "yellow")
-        console.print(f"\n  [bold yellow]HITL:[/bold yellow] {question}")
 
     async def _on_budget_warning(self, event: AgentEvent):
         warnings = event.data.get("warnings", [])
@@ -321,7 +318,6 @@ class TerminalUI:
     async def _on_budget_exceeded(self, event: AgentEvent):
         reason = event.data.get("reason", "unknown")
         self._add_event("⛔", f"BUDGET EXCEEDED: {reason}", "red")
-        console.print(f"\n  [red]⛔ BUDGET EXCEEDED:[/red] {reason}\n")
 
     async def _on_llm_request(self, event: AgentEvent):
         model = event.data.get("model", "")
@@ -345,7 +341,6 @@ class TerminalUI:
     async def _on_error(self, event: AgentEvent):
         error = event.data.get("error", "unknown")
         self._add_event("✗", f"ERROR: {error}", "red")
-        console.print(f"\n[red]ERROR:[/red] {error}\n")
 
     async def _on_warning(self, event: AgentEvent):
         message = event.data.get("message", "unknown")
@@ -354,13 +349,8 @@ class TerminalUI:
     # ── Display Methods (called outside Live context) ─────────
 
     def print_banner(self):
-        """Print the agent banner."""
-        banner = """
-╔══════════════════════════════════════════════╗
-║              DEMOGORGON                      ║
-║     Interactive Security Research Agent      ║
-╚══════════════════════════════════════════════╝"""
-        console.print(banner, style="bold cyan")
+        """Print the unified agent banner (once, shared with CLI theme)."""
+        _print_banner(console)
 
     def print_help(self):
         """Print command help."""
@@ -393,11 +383,11 @@ class TerminalUI:
 
         for i, f in enumerate(findings, 1):
             severity = f.data.get("severity", "unknown")
-            sev_style = {"critical": "bold red", "high": "red", "medium": "yellow", "low": "cyan"}.get(severity, "")
+            sev = _sev_style(severity)
             table.add_row(
                 str(i),
                 f.content[:60],
-                f"[{sev_style}]{severity}[/{sev_style}]" if sev_style else severity,
+                f"[{sev}]{severity}[/{sev}]",
                 f.data.get("endpoint", "")[:30],
             )
 

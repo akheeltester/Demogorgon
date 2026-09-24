@@ -53,7 +53,7 @@ dev = [
 ]
 
 [project.scripts]
-demogorgon = "demogorgon.cli:main"
+demogorgon = "demogorgon.cli:_sync_main"
 
 [project.urls]
 Homepage = "https://github.com/Akheel-Org/Organism"

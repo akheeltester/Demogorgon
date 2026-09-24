@@ -34,7 +34,7 @@ def start(args: list[str] | None = None):
     console = Console()
 
     console.print()
-    console.print("[bold blue]DEMOGOORGON Control Center[/]")
+    console.print("[bold cyan]DEMOGORGON Control Center[/]")
     console.print(f"  Local: [cyan]http://{host}:{port}[/]")
     console.print(f"  Docs:  [cyan]http://{host}:{port}/docs[/]")
     console.print()
