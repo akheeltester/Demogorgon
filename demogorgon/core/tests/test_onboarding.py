@@ -322,3 +322,28 @@ async def test_discover_openai_strips_v1_suffix(monkeypatch):
     models = await md._discover_openai("sk-test", "https://api.openai.com/v1")
     assert captured["url"] == "https://api.openai.com/v1/models"
     assert models[0]["id"] == "gpt-4o-mini"
+
+# ============================================================
+# No shipped keys + post-setup guidance
+# ============================================================
+
+def test_env_example_contains_no_real_api_key():
+    """Placeholders only — every user must supply their own API key."""
+    import re
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[3]
+    text = (repo_root / ".env.example").read_text()
+    assert not re.search(r"sk-(?:or-v1-|ant-)?[A-Za-z0-9]{16,}", text), (
+        ".env.example must never contain a real API key"
+    )
+
+
+def test_next_steps_points_to_in_tool_guided_hunt():
+    """After setup, guidance must ask the target inside the tool (guided hunt),
+    never via a pre-filled CLI argument."""
+    from demogorgon.config.terminal_setup import _next_steps_panel
+
+    text = str(_next_steps_panel().renderable)
+    assert "python -m demogorgon" in text
+    assert "target.example" not in text

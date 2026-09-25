@@ -26,7 +26,6 @@ from ..config.model_discovery import discover_models, test_provider_connection
 from ..config.provider_config import (
     ProviderConfigManager,
     ProviderProfile,
-    _mask_key,
     redact_secrets,
 )
 
@@ -59,6 +58,20 @@ def _prompt_api_key() -> str:
     return api_key
 
 
+def _next_steps_panel() -> Panel:
+    """Post-setup guidance — the guided hunt asks target/scope inside the tool."""
+    return Panel(
+        "[cyan]python -m demogorgon doctor[/]   Verify install + LLM connectivity\n"
+        "[cyan]python -m demogorgon tools[/]    List security tools "
+        "(subfinder, httpx, nuclei…)\n"
+        "[cyan]python -m demogorgon[/]          Guided hunt — the tool asks your "
+        "target,\n"
+        "                                    scope, and program document step by step",
+        title="Next Steps",
+        border_style="cyan",
+    )
+
+
 async def run_setup_wizard(existing_config_only: bool = False) -> ProviderProfile | None:
     """Run the interactive setup wizard.
 
@@ -78,7 +91,7 @@ async def run_setup_wizard(existing_config_only: bool = False) -> ProviderProfil
         console.print(Panel(
             f"Configured provider: [bold green]{active.provider}[/]\n"
             f"Model: [cyan]{active.selected_model or 'not set'}[/]\n"
-            f"API Key: [dim]{active.masked_key}[/]",
+            f"API Key: [green]✓ Supplied[/] [dim](hidden)[/]",
             title="Existing Configuration",
             border_style="green",
         ))
@@ -125,7 +138,7 @@ async def run_setup_wizard(existing_config_only: bool = False) -> ProviderProfil
         env_key = info.get("env_key", "")
         if env_key and os.environ.get(env_key):
             api_key = os.environ[env_key]
-            console.print(f"Found API key in environment: [dim]{_mask_key(api_key)}[/]")
+            console.print("Found API key in environment — will use it [dim](hidden)[/]")
             use_env = Prompt.ask("Use this key?", choices=["y", "n"], default="y")
             if use_env == "n":
                 api_key = _prompt_api_key()
@@ -133,7 +146,7 @@ async def run_setup_wizard(existing_config_only: bool = False) -> ProviderProfil
             # Check secure config
             existing = mgr.get_profile(selected_provider)
             if existing and existing.api_key:
-                console.print(f"Found stored key: [dim]{existing.masked_key}[/]")
+                console.print("Found stored key for this provider — will use it [dim](hidden)[/]")
                 use_stored = Prompt.ask("Use stored key?", choices=["y", "n"], default="y")
                 if use_stored == "y":
                     api_key = existing.api_key
@@ -239,21 +252,13 @@ async def run_setup_wizard(existing_config_only: bool = False) -> ProviderProfil
     console.print(Panel(
         f"Provider: [bold]{info['name']}[/]\n"
         f"Model: [cyan]{selected_model}[/]\n"
-        f"API Key: [dim]{profile.masked_key}[/]\n"
+        f"API Key: [green]✓ Supplied[/] [dim](hidden)[/]\n"
         f"Status: [green]✓ Connected[/]",
         title="Provider Ready",
         border_style="green",
     ))
 
-    console.print(Panel(
-        "[cyan]demogorgon doctor[/]                    Verify install + LLM connectivity\n"
-        "[cyan]demogorgon tools[/]                     List security tools "
-        "(subfinder, httpx, nuclei…)\n"
-        "[cyan]demogorgon https://target.example[/]     Start hunting "
-        "(authorized targets only)",
-        title="Next Steps",
-        border_style="cyan",
-    ))
+    console.print(_next_steps_panel())
 
     return profile
 

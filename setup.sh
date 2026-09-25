@@ -136,3 +136,13 @@ echo "  Test with OWASP Juice Shop:"
 echo "    docker run -d -p 3000:3000 bkimminich/juice-shop"
 echo "    python -m demogorgon http://localhost:3000"
 echo "============================================"
+
+# ── Offer the guided hunt (target is asked inside the tool) ───────────────
+if [ "$SKIP_WIZARD" -eq 0 ] && [ -t 0 ]; then
+    echo ""
+    read -r -p "[?] Start a guided hunt now? The tool asks your target, scope, and program document. [Y/n] " hunt_ans || hunt_ans="n"
+    case "${hunt_ans:-Y}" in
+        [Nn]*) echo "[-] Start anytime with: python -m demogorgon" ;;
+        *) python -m demogorgon ;;
+    esac
+fi
