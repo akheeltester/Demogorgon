@@ -248,3 +248,86 @@ async def test_cmd_program_delegates_to_guided_hunt(monkeypatch):
     monkeypatch.setattr("demogorgon.cli.hunt_flow.guided_hunt", fake_guided)
     await cli.cmd_program()
     assert calls == ["guided"]
+
+# ── Graceful Ctrl+C (no traceback) ───────────────────────────────────────
+
+async def test_run_engagement_cancelled_shows_hint_and_reraises(monkeypatch):
+    """Ctrl+C during a hunt → clean resume hint, CancelledError re-raised."""
+    import asyncio
+
+    import demogorgon.core.runner as runner_mod
+    from demogorgon.cli import _run_engagement
+    from demogorgon.cli.theme import console
+
+    class FakeRunner:
+        def __init__(self, *a, **k):
+            self.workspace_dir = "/tmp/ws"
+
+        async def run(self):
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(runner_mod, "AutonomousRunner", FakeRunner)
+
+    class Eng:
+        target_url = "https://x.example"
+        workspace_dir = "/tmp/ws"
+
+    with console.capture() as cap:
+        with pytest.raises(asyncio.CancelledError):
+            await _run_engagement(Eng())
+    out = cap.get()
+    assert "Engagement interrupted" in out
+    assert "demogorgon resume" in out
+
+
+def test_sync_main_catches_keyboard_interrupt(monkeypatch):
+    """Console-script entry: Ctrl+C → clean message + exit 130, no traceback."""
+    import demogorgon.cli as cli
+    from demogorgon.cli.theme import console
+
+    async def boom():
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(cli, "main", boom)
+
+    with console.capture() as cap:
+        with pytest.raises(SystemExit) as ei:
+            cli._sync_main()
+    assert ei.value.code == 130
+    assert "Interrupted" in cap.get()
+
+
+def test_main_entry_catches_keyboard_interrupt(monkeypatch):
+    """python -m demogorgon entry: Ctrl+C → clean message + exit 130."""
+    import demogorgon.__main__ as dm
+    from demogorgon.cli.theme import console
+
+    def boom():
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(dm, "_main_inner", boom)
+
+    with console.capture() as cap:
+        with pytest.raises(SystemExit) as ei:
+            dm.main()
+    assert ei.value.code == 130
+    assert "Interrupted" in cap.get()
+
+
+def test_sync_main_handles_raw_cancelled_error(monkeypatch):
+    """A CancelledError escaping asyncio.run also exits cleanly (no traceback)."""
+    import asyncio
+
+    import demogorgon.cli as cli
+    from demogorgon.cli.theme import console
+
+    async def coro():
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(cli, "main", coro)
+
+    with console.capture() as cap:
+        with pytest.raises(SystemExit) as ei:
+            cli._sync_main()
+    assert ei.value.code == 130
+    assert "Interrupted" in cap.get()

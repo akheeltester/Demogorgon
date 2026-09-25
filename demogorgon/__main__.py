@@ -21,7 +21,20 @@ import asyncio
 import sys
 
 
-def main():
+def main() -> None:
+    """Entry point — turn Ctrl+C into a clean exit instead of a traceback."""
+    try:
+        _main_inner()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        from demogorgon.cli.theme import console
+        console.print(
+            "\n[yellow]Interrupted.[/yellow] "
+            "Restart with: [cyan]python -m demogorgon[/cyan]"
+        )
+        raise SystemExit(130) from None
+
+
+def _main_inner():
     args = sys.argv[1:]
 
     # ── Default: guided hunt (target → scope → program doc) ─────

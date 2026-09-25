@@ -81,6 +81,14 @@ async def _run_engagement(engagement, resume: bool = False):
         except KeyboardInterrupt:
             console.print("\n[yellow]Engagement interrupted. Resume with: demogorgon resume[/yellow]")
             return
+        except asyncio.CancelledError:
+            # Ctrl+C during a hunt → asyncio cancels the task with CancelledError.
+            # Show a clean hint, then re-raise so asyncio.run() converts it.
+            console.print(
+                "\n[yellow]Engagement interrupted.[/yellow] "
+                "Progress saved to last checkpoint — resume with: [cyan]demogorgon resume[/cyan]"
+            )
+            raise
         except Exception as e:
             from demogorgon.config.provider_config import redact_secrets
             console.print(f"\n[red]Engagement failed: {redact_secrets(str(e))}[/red]")
@@ -664,7 +672,14 @@ async def cmd_metrics(path: str | None = None):
 
 def _sync_main():
     """Console-script entry: wrap async main in asyncio.run."""
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        # Ctrl+C anywhere (wizard prompts, hunt, spinner) — no traceback.
+        console.print(
+            "\n[yellow]Interrupted.[/yellow] Restart with: [cyan]demogorgon[/cyan]"
+        )
+        raise SystemExit(130) from None
 
 
 async def main():
