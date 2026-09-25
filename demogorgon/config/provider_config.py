@@ -340,6 +340,8 @@ class ProviderConfigManager:
         if active:
             env["DEMOGORGON_PROVIDER"] = active.provider
             env["DEMOGORGON_LLM_PROVIDER"] = active.provider
+            if active.api_key:
+                env["DEMOGORGON_API_KEY"] = active.api_key
             if active.selected_model:
                 env["DEMOGORGON_MODEL"] = active.selected_model
             if active.fast_model:

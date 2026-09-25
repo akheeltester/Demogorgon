@@ -63,10 +63,62 @@ PROVIDER_ENV_MAP = {
 }
 
 
+# Env-var prefixes that configure an LLM provider (shell exports count too)
+_PROVIDER_ENV_PREFIXES = (
+    "DEMOGORGON_",
+    "LLM_",
+    "OPENAI_",
+    "OPENROUTER_",
+    "OPENCODE_",
+    "ANTHROPIC_",
+    "GEMINI_",
+    "GOOGLE_",
+    "DEEPSEEK_",
+    "NVIDIA_",
+    "PRIMARY_",
+    "FALLBACK_",
+)
+
+
+def _provider_configured(config: dict[str, str]) -> bool:
+    """Whether an LLM provider is configured via env vars / .env."""
+    if config.get("DEMOGORGON_LLM_PROVIDER") or config.get("LLM_PROVIDER"):
+        return True
+    if config.get("DEMOGORGON_API_KEY") or config.get("LLM_API_KEY"):
+        return True
+    return any(config.get(k) for k in PROVIDER_ENV_MAP)
+
+
+def _merge_saved_provider_env(config: dict[str, str]) -> dict[str, str]:
+    """Merge provider config saved by the setup wizard (~/.demogorgon).
+
+    Only fills gaps — keys already present in config are never overwritten.
+    Mutates and returns config.
+    """
+    if _provider_configured(config):
+        return config
+    try:
+        from ..config.provider_config import ProviderConfigManager
+
+        saved = ProviderConfigManager().to_env_dict()
+        for key, value in saved.items():
+            if value and not config.get(key):
+                config[key] = value
+    except Exception:
+        pass
+    return config
+
+
 def _load_env() -> dict[str, str]:
-    """Load config from .env file."""
+    """Load LLM config from process env, .env file, and saved wizard config.
+
+    Precedence (highest first):
+      1. .env file (repo root) — explicit project config
+      2. process environment (shell exports)
+      3. ~/.demogorgon/ — provider saved by `demogorgon setup` wizard
+    """
     env_path = Path(__file__).parent.parent.parent / ".env"
-    config: dict[str, str] = {}
+    file_config: dict[str, str] = {}
     if env_path.exists():
         for line in env_path.read_text().splitlines():
             line = line.strip()
@@ -78,9 +130,21 @@ def _load_env() -> dict[str, str]:
                 value = value.strip().strip('"').strip("'")
                 if " #" in value:
                     value = value[:value.index(" #")].strip()
-                config[key] = value
-    for key in config:
-        os.environ.setdefault(key, config[key])
+                file_config[key] = value
+
+    # Shell exports (only provider-relevant prefixes) — .env wins on conflict
+    config: dict[str, str] = {
+        k: v
+        for k, v in os.environ.items()
+        if v and k.startswith(_PROVIDER_ENV_PREFIXES)
+    }
+    config.update(file_config)
+
+    # Fallback: provider saved by the `demogorgon setup` wizard (~/.demogorgon/)
+    _merge_saved_provider_env(config)
+
+    for key, value in config.items():
+        os.environ.setdefault(key, value)
     return config
 
 
@@ -275,7 +339,7 @@ class AIProviderManager:
         is_fallback: bool = False,
     ) -> None:
         """Configure a single provider."""
-        if not api_key:
+        if not api_key and name != "ollama":
             logger.warning(f"No API key for provider '{name}'")
             return
 

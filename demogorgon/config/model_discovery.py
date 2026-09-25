@@ -74,7 +74,10 @@ async def discover_models(
 
 async def _discover_openai(api_key: str, base_url: str = "") -> list[dict[str, Any]]:
     """List models from OpenAI API."""
-    url = (base_url.rstrip("/") if base_url else "https://api.openai.com") + "/v1/models"
+    root = base_url.rstrip("/") if base_url else "https://api.openai.com"
+    if root.endswith("/v1"):  # LLM base URLs include /v1; the path below adds it
+        root = root[: -len("/v1")]
+    url = root + "/v1/models"
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
     async with httpx.AsyncClient(timeout=15) as client:
@@ -129,7 +132,10 @@ async def _discover_openrouter(api_key: str, base_url: str = "") -> list[dict[st
 
 async def _discover_ollama(base_url: str = "") -> list[dict[str, Any]]:
     """List locally installed Ollama models."""
-    url = (base_url.rstrip("/") if base_url else "http://localhost:11434") + "/api/tags"
+    root = (base_url.rstrip("/") if base_url else "http://localhost:11434")
+    if root.endswith("/v1"):  # LLM base URLs include /v1; the tags API does not
+        root = root[: -len("/v1")]
+    url = root + "/api/tags"
 
     async with httpx.AsyncClient(timeout=5) as client:
         resp = await client.get(url)

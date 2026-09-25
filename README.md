@@ -66,19 +66,34 @@ The LLM is ONE reasoning component inside the brain — deterministic code handl
 
 ## Quick Start
 
-### 1. Clone & Install
+### 1. Clone & run the installer
 
 ```bash
 git clone https://github.com/akheeltester/Demogorgon.git
 cd Demogorgon
-python -m venv venv
-source venv/bin/activate
-pip install -e .
+bash setup.sh
 ```
 
-### 2. Configure LLM Provider
+`setup.sh` creates a virtualenv, installs Demogorgon, then launches the
+interactive setup wizard — no manual file editing required:
+
+1. **Select provider** — OpenRouter (free tier), OpenAI, Anthropic, Gemini, DeepSeek, or local Ollama
+2. **Connect** — paste your API key; a live connection + structured-output test runs automatically
+3. **Pick a model** — models are discovered live from the provider API (with pricing)
+
+Config is saved securely to `~/.demogorgon/` and mirrored to `.env`.
+Re-run the wizard anytime with `python -m demogorgon setup`.
+Install only, skip the wizard: `bash setup.sh --no-setup`.
+
+**No API key yet?** Create a free one at <https://openrouter.ai/keys> —
+OpenRouter has free models (model IDs ending in `:free`).
+
+<details>
+<summary>Manual configuration (advanced)</summary>
 
 ```bash
+python -m venv venv && source venv/bin/activate
+pip install -e .
 cp .env.example .env
 # Edit .env with your API key
 ```
@@ -90,8 +105,9 @@ cp .env.example .env
 | OpenAI | `gpt-4o-mini` | `https://api.openai.com/v1` |
 | OpenRouter | `nvidia/llama-3.1-nemotron-70b-instruct:free` | `https://openrouter.ai/api/v1` |
 | Anthropic | `claude-sonnet-4-20250514` | (auto) |
+| Gemini | `gemini-2.0-flash` | (auto) |
 | DeepSeek | `deepseek-chat` | `https://api.deepseek.com/v1` |
-| Ollama | `llama3.1` | `http://localhost:11434/v1` |
+| Ollama | `llama3.1:8b` | `http://localhost:11434/v1` |
 
 ```env
 # .env
@@ -100,7 +116,9 @@ DEMOGORGON_API_KEY=sk-your-key-here
 DEMOGORGON_MODEL=gpt-4o-mini
 ```
 
-### 3. Diagnose + Install Tools
+</details>
+
+### 2. Verify + install tools
 
 ```bash
 # Environment + LLM diagnostics
@@ -116,7 +134,7 @@ python -m demogorgon tools install subfinder
 
 Checks: Python version, installed tools, LLM connectivity, latency, structured output.
 
-### 4. Hunt
+### 3. Hunt
 
 ```bash
 # Interactive menu
@@ -135,7 +153,7 @@ python -m demogorgon resume
 python -m demogorgon metrics
 ```
 
-### 5. Web Interface (Cyber-Command Center)
+### 4. Web Interface (Cyber-Command Center)
 
 ```bash
 # Start the web control center
@@ -151,7 +169,7 @@ The web UI provides:
 - **Hunts** — KPI strip, filter pills, running/paused/completed engagement cards
 - **Findings** — Search, severity filters, sort, detail modal, Copy as Markdown
 
-### 6. Test with Juice Shop (safe, local target)
+### 5. Test with Juice Shop (safe, local target)
 
 ```bash
 docker run -d -p 3000:3000 bkimminich/juice-shop

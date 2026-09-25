@@ -1,20 +1,37 @@
 #!/usr/bin/env bash
-# Demogorgon — One-command setup
-# Usage: bash setup.sh
+# Demogorgon — one-command setup for beginners
+#
+#   bash setup.sh              Install + run the interactive setup wizard
+#   bash setup.sh --no-setup   Install only (skip the wizard)
+#
+# The wizard walks you through: select provider → connect (API key + test)
+# → pick a model. After it finishes you're ready to hunt.
 
 set -euo pipefail
+cd "$(dirname "$0")"
+
+SKIP_WIZARD=0
+for arg in "$@"; do
+    case "$arg" in
+        --no-setup) SKIP_WIZARD=1 ;;
+        -h|--help)
+            sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
+    esac
+done
 
 echo "============================================"
 echo "  Demogorgon — Autonomous Bug Bounty Hunter"
-echo "  Setup Script"
+echo "  One-Command Setup"
 echo "============================================"
 echo ""
 
 # ── Check Python version ──────────────────────────────────────────────────
 PYTHON=""
-for cmd in python3.13 python3.12 python3.11 python3; do
+for cmd in python3.14 python3.13 python3.12 python3.11 python3; do
     if command -v "$cmd" &>/dev/null; then
-        version=$("$cmd" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+        version=$("$cmd" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
         major=$(echo "$version" | cut -d. -f1)
         minor=$(echo "$version" | cut -d. -f2)
         if [ "$major" -ge 3 ] && [ "$minor" -ge 11 ]; then
@@ -39,54 +56,74 @@ else
 fi
 
 # ── Activate ──────────────────────────────────────────────────────────────
+# shellcheck disable=SC1091
 source venv/bin/activate
 echo "[+] Activated venv ($(python --version))"
 
-# ── Install dependencies ──────────────────────────────────────────────────
-echo "[+] Installing dependencies..."
-pip install --upgrade pip
-pip install -r requirements.txt
+# ── Install Demogorgon ────────────────────────────────────────────────────
+echo "[+] Installing Demogorgon (this may take a minute)..."
+pip install --upgrade pip >/dev/null 2>&1 || true
+if ! pip install -e .; then
+    echo "[!] Editable install failed — falling back to requirements.txt"
+    pip install -r requirements.txt
+fi
 
-# ── Install Playwright browsers ───────────────────────────────────────────
-echo "[+] Installing Playwright browsers..."
-python -m playwright install chromium
-
-# ── Setup .env ────────────────────────────────────────────────────────────
+# ── Setup .env template ───────────────────────────────────────────────────
 if [ ! -f ".env" ]; then
     cp .env.example .env
     echo "[+] Created .env from .env.example"
-    echo "[!] Edit .env and add your API key (DEMOGORGON_API_KEY or OPENROUTER_API_KEY)"
-else
-    echo "[+] .env already exists"
+fi
+
+# ── Optional: Playwright browsers (for JS-heavy / browser crawling) ───────
+if [ "$SKIP_WIZARD" -eq 0 ] && [ -t 0 ]; then
+    read -r -p "[?] Install Playwright Chromium for browser crawling? [Y/n] " answer || answer="n"
+    case "${answer:-Y}" in
+        [Nn]*) echo "[-] Skipping browser install (run later: python -m playwright install chromium)" ;;
+        *)
+            echo "[+] Installing Playwright Chromium..."
+            python -m playwright install chromium \
+                || echo "[!] Playwright browser install failed — browser crawling unavailable (non-fatal)"
+            ;;
+    esac
 fi
 
 # ── Quick validation ──────────────────────────────────────────────────────
 echo ""
 echo "[+] Validating installation..."
 python -c "
-import httpx, rich, openai, playwright
-print('  [+] All core imports OK')
-" 2>/dev/null || echo "  [-] Some imports failed — check requirements.txt"
+import httpx, rich, openai
+print('  [+] Core imports OK')
+" 2>/dev/null || echo "  [-] Some imports failed — check the pip output above"
 
+# ── Interactive setup wizard ──────────────────────────────────────────────
+echo ""
+if [ "$SKIP_WIZARD" -eq 1 ]; then
+    echo "[+] Skipping setup wizard (--no-setup)."
+    echo "    Run it later: source venv/bin/activate && python -m demogorgon setup"
+elif [ ! -t 0 ]; then
+    echo "[!] Non-interactive terminal — skipping setup wizard."
+    echo "    Run it later: source venv/bin/activate && python -m demogorgon setup"
+else
+    echo "============================================"
+    echo "  Setup wizard: select provider → connect → model"
+    echo "============================================"
+    echo ""
+    python -m demogorgon setup || true
+fi
+
+# ── Done ──────────────────────────────────────────────────────────────────
 echo ""
 echo "============================================"
 echo "  Setup complete!"
 echo ""
-echo "  Quick start:"
-echo "    1. Edit .env and add your API key"
-echo "    2. Run: source venv/bin/activate"
-echo "    3. Run: python -m demogorgon doctor   # verify LLM works"
-echo "    4. Run: python -m demogorgon https://target.com"
+echo "  Getting started:"
+echo "    1. source venv/bin/activate"
+echo "    2. python -m demogorgon doctor      # verify LLM works"
+echo "    3. python -m demogorgon tools       # list security tools"
+echo "    4. python -m demogorgon https://target.com"
 echo ""
-echo "  Supported providers in .env:"
-echo "    DEMOGORGON_LLM_PROVIDER=openai|openrouter|anthropic|deepseek|ollama"
-echo "    DEMOGORGON_API_KEY=your-key"
-echo "    DEMOGORGON_MODEL=gpt-4o-mini"
-echo ""
-echo "  Or use legacy format:"
-echo "    OPENROUTER_API_KEY=sk-or-..."
-echo "    OPENROUTER_BASE_URL=https://openrouter.ai/api/v1"
-echo "    PRIMARY_MODEL=nvidia/llama-3.1-nemotron-70b-instruct:free"
+echo "  Re-run the wizard anytime:"
+echo "    python -m demogorgon setup"
 echo ""
 echo "  Test with OWASP Juice Shop:"
 echo "    docker run -d -p 3000:3000 bkimminich/juice-shop"

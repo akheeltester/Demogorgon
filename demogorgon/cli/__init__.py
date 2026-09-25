@@ -32,6 +32,7 @@ from .theme import (
     findings_table,
     sev_badge,
     sev_style,
+    status_table,
     VERSION,
     DEMO_THEME,
 )
@@ -350,7 +351,22 @@ async def cmd_doctor():
                 checks.append((name, "Not installed", False))
 
     env_exists = Path(".env").exists()
-    checks.append((".env", "Exists" if env_exists else "Missing", env_exists))
+    if env_exists:
+        checks.append((".env", "Exists", True))
+    else:
+        wizard_saved = False
+        try:
+            from demogorgon.config.provider_config import ProviderConfigManager
+            active = ProviderConfigManager().get_active_profile()
+            wizard_saved = active is not None and bool(
+                active.api_key or active.provider == "ollama"
+            )
+        except Exception:
+            pass
+        if wizard_saved:
+            checks.append(("LLM config", "Saved by setup wizard", True))
+        else:
+            checks.append((".env", "Missing — run: demogorgon setup", False))
 
     table = Table(show_header=True, border_style="cyan")
     table.add_column("Component", min_width=14)
@@ -365,7 +381,7 @@ async def cmd_doctor():
 
     console.print("\n[bold]LLM Diagnostics[/bold]\n")
 
-    from demogorgon.llm.manager import AIProviderManager
+    from demogorgon.llm.manager import AIProviderManager, PROVIDER_ENV_MAP
 
     mgr = AIProviderManager()
     mgr.configure()
@@ -377,10 +393,16 @@ async def cmd_doctor():
     llm_table.add_row("Provider", mgr._active_provider or "[red]NOT CONFIGURED[/red]")
     llm_table.add_row("Model", mgr._active_model or "N/A")
 
-    api_key = mgr._env.get("DEMOGORGON_API_KEY") or mgr._env.get("LLM_API_KEY", "")
+    api_key = (
+        mgr._env.get("DEMOGORGON_API_KEY")
+        or mgr._env.get("LLM_API_KEY")
+        or next((mgr._env[k] for k in PROVIDER_ENV_MAP if mgr._env.get(k)), "")
+    )
     if api_key:
         masked = f"{api_key[:4]}...{api_key[-4:]}" if len(api_key) > 8 else "SET"
         llm_table.add_row("API Key", f"[green]{masked}[/green]")
+    elif mgr.available:
+        llm_table.add_row("API Key", "[green]Not required (local provider)[/green]")
     else:
         llm_table.add_row("API Key", "[red]NOT CONFIGURED[/red]")
 

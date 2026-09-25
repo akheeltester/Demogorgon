@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -42,6 +43,19 @@ PROVIDER_DISPLAY = {
 
 def _provider_info(provider: str) -> dict:
     return PROVIDER_DISPLAY.get(provider, {"name": provider, "icon": "❓", "env_key": ""})
+
+
+def _prompt_api_key() -> str:
+    """Prompt for an API key until a non-empty value is entered."""
+    api_key = ""
+    while not api_key:
+        api_key = Prompt.ask("Enter API key", password=True).strip()
+        if not api_key:
+            console.print(
+                "[red]An API key is required.[/] "
+                "Get a free key at https://openrouter.ai/keys (Ctrl+C to cancel)"
+            )
+    return api_key
 
 
 async def run_setup_wizard(existing_config_only: bool = False) -> ProviderProfile | None:
@@ -113,7 +127,7 @@ async def run_setup_wizard(existing_config_only: bool = False) -> ProviderProfil
             console.print(f"Found API key in environment: [dim]{_mask_key(api_key)}[/]")
             use_env = Prompt.ask("Use this key?", choices=["y", "n"], default="y")
             if use_env == "n":
-                api_key = Prompt.ask("Enter API key", password=True)
+                api_key = _prompt_api_key()
         else:
             # Check secure config
             existing = mgr.get_profile(selected_provider)
@@ -123,9 +137,9 @@ async def run_setup_wizard(existing_config_only: bool = False) -> ProviderProfil
                 if use_stored == "y":
                     api_key = existing.api_key
                 else:
-                    api_key = Prompt.ask("Enter API key", password=True)
+                    api_key = _prompt_api_key()
             else:
-                api_key = Prompt.ask("Enter API key", password=True)
+                api_key = _prompt_api_key()
 
     # ── Step 3: Base URL (optional) ──────────────────────────────
 
@@ -133,7 +147,7 @@ async def run_setup_wizard(existing_config_only: bool = False) -> ProviderProfil
     if selected_provider == "openrouter":
         base_url = "https://openrouter.ai/api/v1"
     elif selected_provider == "ollama":
-        base_url = Prompt.ask("Ollama URL", default="http://localhost:11434")
+        base_url = Prompt.ask("Ollama base URL", default="http://localhost:11434/v1")
 
     # ── Step 4: Test connection ──────────────────────────────────
 
@@ -214,6 +228,9 @@ async def run_setup_wizard(existing_config_only: bool = False) -> ProviderProfil
     # Also load into environment for LLMManager compatibility
     mgr.load_into_environment(selected_provider)
 
+    # Mirror into the project .env so doctor / hand-editing / fresh shells work
+    _write_dotenv(profile)
+
     # ── Summary ──────────────────────────────────────────────────
 
     console.print()
@@ -221,12 +238,83 @@ async def run_setup_wizard(existing_config_only: bool = False) -> ProviderProfil
         f"Provider: [bold]{info['name']}[/]\n"
         f"Model: [cyan]{selected_model}[/]\n"
         f"API Key: [dim]{profile.masked_key}[/]\n"
-        f"Status: [green]✓ Configured[/]",
+        f"Status: [green]✓ Connected[/]",
         title="Provider Ready",
         border_style="green",
     ))
 
+    console.print(Panel(
+        "[cyan]demogorgon doctor[/]                    Verify install + LLM connectivity\n"
+        "[cyan]demogorgon tools[/]                     List security tools "
+        "(subfinder, httpx, nuclei…)\n"
+        "[cyan]demogorgon https://target.example[/]     Start hunting "
+        "(authorized targets only)",
+        title="Next Steps",
+        border_style="cyan",
+    ))
+
     return profile
+
+
+# Keys the wizard owns inside .env (everything else is preserved)
+_MANAGED_ENV_KEYS = (
+    "DEMOGORGON_LLM_PROVIDER",
+    "DEMOGORGON_API_KEY",
+    "DEMOGORGON_MODEL",
+    "DEMOGORGON_BASE_URL",
+    "DEMOGORGON_FAST_MODEL",
+    "DEMOGORGON_REASONING_MODEL",
+)
+
+
+def _write_dotenv(profile: ProviderProfile, env_path: Path | None = None) -> bool:
+    """Mirror the wizard config into the project .env file.
+
+    Preserves comments and unrelated settings; replaces only the managed
+    DEMOGORGON_* provider keys. Returns True if written.
+    """
+    if env_path is None:
+        env_path = Path(__file__).resolve().parents[2] / ".env"
+
+    new_lines = [
+        "# Written by `demogorgon setup` — see .env.example for all options",
+        f"DEMOGORGON_LLM_PROVIDER={profile.provider}",
+    ]
+    if profile.api_key:
+        new_lines.append(f"DEMOGORGON_API_KEY={profile.api_key}")
+    if profile.selected_model:
+        new_lines.append(f"DEMOGORGON_MODEL={profile.selected_model}")
+    if profile.base_url:
+        new_lines.append(f"DEMOGORGON_BASE_URL={profile.base_url}")
+    new_block = "\n".join(new_lines) + "\n"
+
+    kept: list[str] = []
+    if env_path.exists():
+        existing = env_path.read_text()
+        has_live_config = any(
+            ln.strip().startswith("DEMOGORGON_LLM_PROVIDER=")
+            for ln in existing.splitlines()
+            if not ln.strip().startswith("#")
+        )
+        if has_live_config and not Confirm.ask(
+            ".env already has a provider configured. Update it?", default=True
+        ):
+            return False
+        kept = [
+            ln for ln in existing.splitlines()
+            if ln.strip().split("=", 1)[0].strip() not in _MANAGED_ENV_KEYS
+        ]
+        while kept and not kept[-1].strip():
+            kept.pop()
+
+    content = ("\n".join(kept) + "\n\n" if kept else "") + new_block
+    env_path.write_text(content)
+    try:
+        env_path.chmod(0o600)
+    except OSError:
+        pass
+    console.print(f"[green]✓ Configuration saved to {env_path}[/green]")
+    return True
 
 
 def _is_configured(mgr: ProviderConfigManager, provider: str) -> bool:
