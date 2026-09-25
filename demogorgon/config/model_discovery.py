@@ -16,7 +16,6 @@ Usage:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -188,7 +187,13 @@ async def test_provider_connection(
             "structured_output": smoke,
         }
     except Exception as e:
-        return {"success": False, "error": str(e), "latency_ms": None, "model": None}
+        from .provider_config import redact_secrets
+        return {
+            "success": False,
+            "error": redact_secrets(str(e)),
+            "latency_ms": None,
+            "model": None,
+        }
 
 
 def _guess_context_length(model_id: str) -> int:

@@ -134,24 +134,33 @@ python -m demogorgon tools install subfinder
 
 Checks: Python version, installed tools, LLM connectivity, latency, structured output.
 
-### 3. Hunt
+### 3. Hunt — guided flow
 
 ```bash
-# Interactive menu
+# Guided hunt: asks target → scope → program document → hunt
 python -m demogorgon
 
-# Quick scan against a target
+# Guided hunt with target prefilled
 python -m demogorgon https://example.com
 
-# Paste a HackerOne/Bugcrowd program policy
+# Guided hunt (program-document intake)
 python -m demogorgon --program
 
-# Resume a previous engagement
-python -m demogorgon resume
+# Full interactive menu
+python -m demogorgon menu
 
-# Show last hunt metrics (rates, severity breakdown)
+# Resume a previous engagement / show hunt metrics
+python -m demogorgon resume
 python -m demogorgon metrics
 ```
+
+The guided hunt walks you through three colorful steps:
+
+1. **Target** — URL or domain
+2. **Scope** — upload the program's policy document (drag & drop a
+   `.txt` / `.md` / `.html` / `.pdf` file, or paste the text, or target-only)
+   and optionally append extra in-scope patterns
+3. **Authorization** — confirm you are in-scope, then the hunt starts
 
 ### 4. Web Interface (Cyber-Command Center)
 

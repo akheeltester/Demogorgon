@@ -1,8 +1,12 @@
 """Demogorgon — Autonomous Security Research Agent.
 
 Usage:
-    python -m demogorgon                              # Interactive agent (default)
-    python -m demogorgon <target>                     # Agent with target
+    python -m demogorgon                              # Guided hunt (target → scope → program doc)
+    python -m demogorgon <target>                     # Guided hunt with target prefilled
+    python -m demogorgon --program                    # Guided hunt (program-document intake)
+    python -m demogorgon menu                         # Full interactive menu
+    python -m demogorgon agent                        # Interactive agent session
+    python -m demogorgon agent <target>               # Agent quick run
     python -m demogorgon --resume                     # Resume saved session
     python -m demogorgon --session <id>               # Resume specific session
     python -m demogorgon --non-interactive <target>   # Non-interactive mode
@@ -20,16 +24,20 @@ import sys
 def main():
     args = sys.argv[1:]
 
-    # ── Default: launch interactive agent ────────────────────────
+    # ── Default: guided hunt (target → scope → program doc) ─────
     if not args:
-        from demogorgon.agent.main import AgentMain
-        agent = AgentMain()
-        asyncio.run(agent.start())
+        from demogorgon.cli.hunt_flow import guided_hunt
+        asyncio.run(guided_hunt())
         return
 
     command = args[0]
 
     # ── Flag-based routing ───────────────────────────────────────
+    if command == "--program":
+        from demogorgon.cli.hunt_flow import guided_hunt
+        asyncio.run(guided_hunt())
+        return
+
     if command == "--resume":
         from demogorgon.agent.main import AgentMain
         agent = AgentMain()
@@ -58,6 +66,19 @@ def main():
 
     if command in ("-h", "--help", "help"):
         _print_help()
+        return
+
+    # ── Agent session (explicit) ─────────────────────────────────
+    if command == "agent":
+        agent_target = next((a for a in args[1:] if not a.startswith("-")), "")
+        from demogorgon.agent.main import AgentMain
+        agent = AgentMain()
+        asyncio.run(agent.start(target=agent_target, interactive=not agent_target))
+        return
+
+    if command == "menu":
+        from demogorgon.cli import cmd_interactive
+        asyncio.run(cmd_interactive())
         return
 
     # ── Subcommand routing ──────────────────────────────────────
@@ -94,12 +115,13 @@ def main():
         from demogorgon.cli import cmd_metrics
         path = args[1] if len(args) > 1 else None
         asyncio.run(cmd_metrics(path))
+    elif command.startswith("-"):
+        print(f"Unknown flag: {command}")
+        _print_help()
     else:
-        # Treat as a target URL — launch agent directly
-        target = command
-        from demogorgon.agent.main import AgentMain
-        agent = AgentMain()
-        asyncio.run(agent.start(target=target, interactive=False))
+        # Treat as a target URL — guided hunt (target → scope → program doc)
+        from demogorgon.cli.hunt_flow import guided_hunt
+        asyncio.run(guided_hunt(target=command))
 
 
 def _cmd_setup():
@@ -184,8 +206,12 @@ def _print_help():
 
 [bold]Usage:[/]
 
-  [cyan]python -m demogorgon[/]                     Launch interactive agent
-  [cyan]python -m demogorgon <target>[/]            Hunt a specific target
+  [cyan]python -m demogorgon[/]                     Guided hunt (target → scope → program doc)
+  [cyan]python -m demogorgon <target>[/]            Guided hunt with target prefilled
+  [cyan]python -m demogorgon --program[/]           Guided hunt (program-document intake)
+  [cyan]python -m demogorgon menu[/]                Full interactive menu
+  [cyan]python -m demogorgon agent[/]               Interactive agent session
+  [cyan]python -m demogorgon agent <target>[/]      Agent quick run
   [cyan]python -m demogorgon --resume[/]            Resume saved session
   [cyan]python -m demogorgon --session <id>[/]      Resume specific session
   [cyan]python -m demogorgon setup[/]               Configure providers
@@ -201,9 +227,9 @@ def _print_help():
 
 [bold]Examples:[/]
 
-  python -m demogorgon
+  python -m demogorgon                     # asks target → scope → program doc
   python -m demogorgon https://lab.local
-    python -m demogorgon setup
+  python -m demogorgon setup
   python -m demogorgon web
   python -m demogorgon tools
   python -m demogorgon metrics

@@ -90,6 +90,9 @@ async def test_provider(req: ProviderTestRequest):
     """Test a provider connection."""
     from ..config.model_discovery import test_provider_connection
     result = await test_provider_connection(req.provider, req.api_key, req.base_url)
+    if result.get("error"):
+        from ..config.provider_config import redact_secrets
+        result["error"] = redact_secrets(result["error"])
     return result
 
 

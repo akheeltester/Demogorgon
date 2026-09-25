@@ -5,14 +5,17 @@ Interactive autonomous security research agent — Claude Code/Codex-style termi
 ## Quick Start
 
 ```bash
+# Default entry: guided hunt (target → scope → program document)
+python -m demogorgon
+
 # Interactive mode (prompts for target, provider, model, budget)
 python -m demogorgon agent
 
 # Quick mode (auto-detects provider from env)
 python -m demogorgon agent https://target.com
 
-# Legacy CLI mode (still works)
-python -m demogorgon https://target.com
+# Legacy CLI menu (still works)
+python -m demogorgon menu
 ```
 
 ## Architecture

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import time
 from dataclasses import dataclass, field, asdict
@@ -50,6 +51,41 @@ def _mask_key(key: str) -> str:
     if len(key) <= 8:
         return key[:2] + "*" * (len(key) - 2)
     return key[:4] + "*" * (len(key) - 8) + key[-4:]
+
+
+_SECRET_RE = re.compile(
+    r"(?i)("
+    r"\bsk-[A-Za-z0-9_\-]{8,}"
+    r"|\bAIza[0-9A-Za-z_\-]{10,}"
+    r"|\bxox[baprs]-[A-Za-z0-9\-]{10,}"
+    r"|\bgh[pousr]_[A-Za-z0-9]{16,}"
+    r"|\bgithub_pat_[A-Za-z0-9_]{20,}"
+    r"|\beyJ[A-Za-z0-9_\-]{16,}\.[A-Za-z0-9_\-]{10,}"
+    r"|\bBearer\s+[A-Za-z0-9_\-\.\=]{10,}"
+    r"|[?&](?:api[_-]?key|key|token|access_token|auth)=[^&\s\"']+"
+    r")"
+)
+
+
+def _secret_fragment(match: re.Match) -> str:
+    frag = match.group(0)
+    if frag[:1] in "?&":
+        return frag.split("=", 1)[0] + "=***"
+    if frag.lower().startswith("bearer"):
+        return "Bearer ***"
+    return "***"
+
+
+def redact_secrets(text: Any) -> str:
+    """Scrub API keys/tokens from any string before display, logging, or API response.
+
+    Never print or return raw credentials — even inside error messages
+    (httpx exceptions can embed full URLs with ?key=... query params).
+    """
+    if text is None:
+        return ""
+    s = text if isinstance(text, str) else str(text)
+    return _SECRET_RE.sub(_secret_fragment, s)
 
 
 def _simple_encrypt(data: str, key: str) -> bytes:

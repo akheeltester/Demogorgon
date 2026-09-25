@@ -73,6 +73,7 @@ if [ ! -f ".env" ]; then
     cp .env.example .env
     echo "[+] Created .env from .env.example"
 fi
+chmod 600 .env 2>/dev/null || true
 
 # ── Optional: Playwright browsers (for JS-heavy / browser crawling) ───────
 if [ "$SKIP_WIZARD" -eq 0 ] && [ -t 0 ]; then
@@ -120,7 +121,13 @@ echo "  Getting started:"
 echo "    1. source venv/bin/activate"
 echo "    2. python -m demogorgon doctor      # verify LLM works"
 echo "    3. python -m demogorgon tools       # list security tools"
-echo "    4. python -m demogorgon https://target.com"
+echo "    4. python -m demogorgon             # guided hunt: target → scope → program doc"
+echo ""
+echo "  In the guided hunt you will be asked:"
+echo "    - Target URL/domain"
+echo "    - Scope: upload a program document (drag & drop the"
+echo "      policy .txt/.md/.pdf from HackerOne/Bugcrowd) or paste it"
+echo "    - Authorization confirmation (you must be in-scope)"
 echo ""
 echo "  Re-run the wizard anytime:"
 echo "    python -m demogorgon setup"

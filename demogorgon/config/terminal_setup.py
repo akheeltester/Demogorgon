@@ -14,20 +14,21 @@ Usage:
 
 from __future__ import annotations
 
-import asyncio
 import os
-import sys
 from pathlib import Path
-from typing import Any
 
 from rich.console import Console
-from rich.table import Table
 from rich.panel import Panel
-from rich.prompt import Prompt, Confirm
-from rich.text import Text
+from rich.prompt import Confirm, Prompt
+from rich.table import Table
 
-from ..config.provider_config import ProviderConfigManager, ProviderProfile, _mask_key
 from ..config.model_discovery import discover_models, test_provider_connection
+from ..config.provider_config import (
+    ProviderConfigManager,
+    ProviderProfile,
+    _mask_key,
+    redact_secrets,
+)
 
 console = Console()
 
@@ -156,14 +157,15 @@ async def run_setup_wizard(existing_config_only: bool = False) -> ProviderProfil
         result = await test_provider_connection(selected_provider, api_key, base_url)
 
         if result["success"]:
-            console.print(f"  [green]✓ Authentication successful[/]")
+            console.print("  [green]✓ Authentication successful[/]")
             console.print(f"  [green]✓ Model available: {result.get('model', 'unknown')}[/]")
             if result.get("structured_output"):
-                console.print(f"  [green]✓ Structured output supported[/]")
+                console.print("  [green]✓ Structured output supported[/]")
             else:
-                console.print(f"  [yellow]⚠ Structured output test failed (may still work)[/]")
+                console.print("  [yellow]⚠ Structured output test failed (may still work)[/]")
         else:
-            console.print(f"  [red]✗ Connection failed: {result.get('error', 'unknown')}[/]")
+            err = redact_secrets(result.get("error", "unknown"))
+            console.print(f"  [red]✗ Connection failed: {err}[/]")
             retry = Prompt.ask("Try again?", choices=["y", "n"], default="y")
             if retry == "y":
                 return await run_setup_wizard()

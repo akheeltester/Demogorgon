@@ -1,9 +1,10 @@
 """CLI — Demogorgon command-line interface.
 
 Usage:
-    demogorgon                              # Interactive menu
-    demogorgon https://example.com          # Quick scan (requires confirmation)
-    demogorgon --program                    # Paste program policy
+    demogorgon                              # Guided hunt (target → scope → program doc)
+    demogorgon https://example.com          # Guided hunt with target prefilled
+    demogorgon --program                    # Guided hunt (program-document intake)
+    demogorgon menu                         # Full interactive menu
     demogorgon resume                       # Resume engagement
     demogorgon status                       # Show status
     demogorgon findings                     # Show findings
@@ -81,12 +82,14 @@ async def _run_engagement(engagement, resume: bool = False):
             console.print("\n[yellow]Engagement interrupted. Resume with: demogorgon resume[/yellow]")
             return
         except Exception as e:
-            console.print(f"\n[red]Engagement failed: {e}[/red]")
+            from demogorgon.config.provider_config import redact_secrets
+            console.print(f"\n[red]Engagement failed: {redact_secrets(str(e))}[/red]")
             console.print("State saved. Resume with: demogorgon resume")
             return
 
     if result.get("error"):
-        console.print(f"\n[red]Engagement error: {result['error']}[/red]")
+        from demogorgon.config.provider_config import redact_secrets
+        console.print(f"\n[red]Engagement error: {redact_secrets(str(result['error']))}[/red]")
     else:
         console.print(Panel(
             f"[green]Engagement Complete[/green]\n"
@@ -105,8 +108,8 @@ async def cmd_interactive():
 
     menu = (
         "[bold cyan]How do you want to start?[/bold cyan]\n\n"
-        "  [bold white]1[/bold white]  📋  Paste bug bounty program policy\n"
-        "  [bold white]2[/bold white]  🎯  Quick hunt (enter target URL/domain)\n"
+        "  [bold white]1[/bold white]  🎯  Guided hunt (target → scope → program doc)\n"
+        "  [bold white]2[/bold white]  ⚡   Quick hunt (URL only)\n"
         "  [bold white]3[/bold white]  ▶   Resume engagement\n"
         "  [bold white]4[/bold white]  ⚙   Setup / providers / models\n"
         "  [bold white]5[/bold white]  🩺  Diagnostics (doctor)\n"
@@ -126,7 +129,8 @@ async def cmd_interactive():
     )
 
     if choice == "1":
-        await cmd_program()
+        from .hunt_flow import guided_hunt
+        await guided_hunt()
     elif choice == "2":
         url = Prompt.ask("Enter target URL/domain", console=console)
         await cmd_target(url)
@@ -161,81 +165,9 @@ async def _launch_web():
 
 
 async def cmd_program():
-    """Paste and parse a bug bounty program."""
-    print_banner()
-    print_header("Paste Program Policy")
-    console.print("Paste the complete program guidelines.")
-    console.print("Type [cyan]END[/cyan] on a new line when finished.\n")
-
-    lines = []
-    while True:
-        try:
-            line = input()
-            if line.strip() == "END":
-                break
-            lines.append(line)
-        except EOFError:
-            break
-
-    if not lines:
-        console.print("[red]No program text provided.[/red]")
-        return
-
-    program_text = "\n".join(lines)
-
-    with console.status("[cyan]Parsing program…[/cyan]"):
-        from demogorgon.core.scope.parser import parse_program_policy
-        policy = parse_program_policy(program_text)
-
-    console.print("[green]✓ Program parsed successfully[/green]\n")
-
-    table = info_table(
-        [
-            ("Program", policy.program_name),
-            ("Platform", policy.platform),
-            ("In-Scope", str(len(policy.in_scope))),
-            ("Out-of-Scope", str(len(policy.out_of_scope))),
-            ("Restrictions", str(len(policy.restrictions))),
-            ("Allowed Vulns", ", ".join(policy.allowed_vulnerabilities) or "Not specified"),
-            ("Forbidden", ", ".join(policy.forbidden_vulnerabilities) or "Not specified"),
-            ("Account Creation", "Allowed" if policy.account_creation_allowed else "Not Allowed"),
-            ("Safe Harbor", "Yes" if policy.safe_harbor else "Not specified"),
-        ],
-        title="Parsed Policy",
-    )
-    console.print(table)
-
-    if policy.in_scope:
-        console.print("\n[bold]In-Scope Assets:[/bold]")
-        for asset in policy.in_scope[:20]:
-            console.print(f"  • [green]{asset.pattern}[/green] ({asset.asset_type})")
-        if len(policy.in_scope) > 20:
-            console.print(f"  … and {len(policy.in_scope) - 20} more")
-
-    if policy.restrictions:
-        console.print("\n[bold]Restrictions:[/bold]")
-        for r in policy.restrictions:
-            console.print(f"  [yellow]![/yellow] {r.category}: {r.description}")
-
-    if Confirm.ask("\n[bold]Create engagement?[/bold]", default=True, console=console):
-        from demogorgon.core.engagement.manager import EngagementManager
-        manager = EngagementManager()
-        engagement = manager.create_from_policy(program_text)
-
-        console.print(f"[green]Engagement created: {engagement.id}[/green]")
-        console.print(f"Workspace: {engagement.workspace_dir}")
-
-        console.print("\n[bold yellow]Authorization Required[/bold yellow]")
-        console.print("Confirm you are authorized to test this target.")
-        if Confirm.ask("[bold]Are you authorized to test this target?[/bold]", default=False, console=console):
-            from demogorgon.core.engagement import AuthorizationStatus, EngagementStatus
-            engagement.authorization_status = AuthorizationStatus.CONFIRMED
-            engagement.status = EngagementStatus.ACTIVE
-            engagement.save(str(Path(engagement.workspace_dir) / "engagement.json"))
-            console.print("[green]Authorization confirmed. Engagement active.[/green]")
-            await _run_engagement(engagement)
-        else:
-            console.print("[red]Authorization not confirmed. Engagement paused.[/red]")
+    """Guided hunt with program-document intake (kept for --program compatibility)."""
+    from .hunt_flow import guided_hunt
+    await guided_hunt()
 
 
 async def cmd_target(url: str):
@@ -440,7 +372,8 @@ async def cmd_doctor():
         smoke_table.add_row("Structured Output", f"[{st_style}]{structured}[/{st_style}]")
 
         if smoke.get("error"):
-            smoke_table.add_row("Error", f"[red]{str(smoke['error'])[:100]}[/red]")
+            from demogorgon.config.provider_config import redact_secrets
+            smoke_table.add_row("Error", f"[red]{redact_secrets(str(smoke['error']))[:100]}[/red]")
         if smoke.get("missing_fields"):
             smoke_table.add_row("Missing Fields", str(smoke["missing_fields"]))
 
@@ -743,10 +676,11 @@ async def main():
         description="Demogorgon — Autonomous Bug Bounty Researcher",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
-    Examples:
-  demogorgon                              Interactive menu
-  demogorgon https://example.com          Quick scan (requires confirmation)
-  demogorgon --program                    Paste program policy
+Examples:
+  demogorgon                              Guided hunt (target → scope → program doc)
+  demogorgon https://example.com          Guided hunt with target prefilled
+  demogorgon --program                    Guided hunt (program-document intake)
+  demogorgon menu                         Full interactive menu
   demogorgon resume                       Resume engagement
   demogorgon status                       Show status
   demogorgon findings                     Show findings
@@ -763,13 +697,13 @@ Version: {VERSION}
     )
 
     parser.add_argument("target", nargs="?", help="Target URL/domain")
-    parser.add_argument("--program", action="store_true", help="Paste program policy")
+    parser.add_argument("--program", action="store_true", help="Guided hunt (program-document intake)")
     parser.add_argument(
         "command",
         nargs="?",
         choices=[
             "resume", "status", "findings", "report", "setup",
-            "doctor", "web", "help", "tools", "metrics",
+            "doctor", "web", "help", "tools", "metrics", "menu",
         ],
         help="Command to run",
     )
@@ -788,7 +722,7 @@ Version: {VERSION}
 
     known_commands = {
         "resume", "status", "findings", "report", "setup",
-        "doctor", "web", "help", "tools", "metrics",
+        "doctor", "web", "help", "tools", "metrics", "menu",
     }
     if args.target in known_commands and not args.command:
         args.command = args.target
@@ -798,6 +732,8 @@ Version: {VERSION}
         parser.print_help()
     elif args.program:
         await cmd_program()
+    elif args.command == "menu":
+        await cmd_interactive()
     elif args.command == "resume":
         await cmd_resume()
     elif args.command == "status":
@@ -817,9 +753,11 @@ Version: {VERSION}
     elif args.command == "metrics":
         await cmd_metrics(args.target or args.subcommand)
     elif args.target:
-        await cmd_target(args.target)
+        from .hunt_flow import guided_hunt
+        await guided_hunt(target=args.target)
     else:
-        await cmd_interactive()
+        from .hunt_flow import guided_hunt
+        await guided_hunt()
 
 
 if __name__ == "__main__":
