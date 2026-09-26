@@ -319,21 +319,28 @@ class ProviderConfigManager:
                     api_key=api_key,
                     base_url=base_url or None,
                 )
-                # Health check
+                # Health check — a dict is ALWAYS truthy, so test it properly
                 healthy = await manager.health_check()
-                if not healthy:
-                    return {"success": False, "error": "Provider not reachable"}
+                if not isinstance(healthy, dict) or healthy.get("status") != "healthy":
+                    if isinstance(healthy, dict):
+                        reason = healthy.get("error") or healthy.get("connectivity") or "unknown"
+                    else:
+                        reason = "Provider not reachable"
+                    return {"success": False, "error": f"Provider not reachable: {reason}"}
 
                 # Smoke test
                 smoke = await manager.smoke_test()
-                if not smoke:
+                smoke_ok = (
+                    isinstance(smoke, dict) and smoke.get("status") == "ok"
+                )
+                if not smoke_ok:
                     return {"success": False, "error": "Structured output test failed"}
 
                 return {
                     "success": True,
                     "provider": provider,
                     "model": manager._active_model,
-                    "latency_ms": healthy,
+                    "latency_ms": healthy.get("latency"),
                 }
             except Exception as e:
                 return {"success": False, "error": str(e)}

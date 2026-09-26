@@ -179,13 +179,15 @@ async def test_provider_connection(
         # 1. Health check — must report status "healthy"
         health = await manager.health_check()
         if not isinstance(health, dict) or health.get("status") != "healthy":
-            detail = (
-                health.get("connectivity")
-                if isinstance(health, dict) else "Provider not reachable"
-            )
+            if isinstance(health, dict):
+                # Prefer the concrete reason ("google-genai package not
+                # installed …") over the bare "FAILED" bucket label.
+                detail = health.get("error") or health.get("connectivity") or "unknown"
+            else:
+                detail = "Provider not reachable"
             return {
                 "success": False,
-                "error": f"Provider not reachable ({detail})",
+                "error": f"Provider not reachable: {detail}",
                 "latency_ms": None,
                 "model": None,
             }

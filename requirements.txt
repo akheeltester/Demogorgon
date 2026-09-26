@@ -9,6 +9,10 @@ openai>=1.0
 python-dotenv>=1.0
 urllib3>=2.0
 
+# ── LLM provider SDKs (the setup wizard offers all three providers) ─────────
+anthropic>=0.40
+google-genai>=1.0
+
 # ── Browser automation ─────────────────────────────────────────────────────
 playwright>=1.40
 

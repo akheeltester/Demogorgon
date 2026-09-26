@@ -13,9 +13,52 @@ from typing import Any
 from .registry import CapabilityRegistry, CapabilityStatus
 
 
+def llm_circuit_state(llm_generate: Any = None) -> dict[str, Any]:
+    """Circuit-breaker state reachable from an injected LLM callable.
+
+    The runner only holds ``manager.generate`` (a bound method), so we reach
+    the manager through ``__self__``.  Anything else — a test double, a plain
+    function — yields an inert result.
+
+    Returns ``{"open": {provider: reason}, "exhausted": bool}`` where
+    ``exhausted`` means every registered provider is circuit-open, i.e. the
+    LLM cannot be reached at all.
+    """
+    inert: dict[str, Any] = {"open": {}, "exhausted": False}
+    mgr = getattr(llm_generate, "__self__", None)
+    if mgr is None:
+        return inert
+    try:
+        circuits = getattr(mgr, "open_circuits", None)
+        open_circuits = (
+            {str(k): str(v) for k, v in circuits.items()}
+            if isinstance(circuits, dict) and circuits
+            else {}
+        )
+        providers = getattr(mgr, "_providers", None)
+        candidates = getattr(mgr, "_candidate_providers", None)
+        if isinstance(providers, dict) and providers and callable(candidates):
+            remaining = candidates()
+            exhausted = isinstance(remaining, list) and not remaining
+        else:
+            exhausted = False
+    except Exception:  # noqa: BLE001 — diagnostics must never raise
+        return inert
+    return {"open": open_circuits, "exhausted": bool(exhausted)}
+
+
 def _probe_llm(llm_generate: Any = None) -> Any:
     """LLM capability: a callable was injected, or a provider is configured."""
     if llm_generate is not None:
+        circuits = llm_circuit_state(llm_generate)
+        if circuits["exhausted"]:
+            detail = "; ".join(
+                f"{k} ({v})" for k, v in circuits["open"].items()
+            ) or "all providers circuit-open"
+            return CapabilityStatus.UNAVAILABLE, f"all LLM providers circuit-open: {detail}"
+        if circuits["open"]:
+            detail = "; ".join(f"{k} ({v})" for k, v in circuits["open"].items())
+            return CapabilityStatus.DEGRADED, f"circuit open: {detail}"
         return CapabilityStatus.AVAILABLE, "llm_generate injected"
     try:
         from demogorgon.llm.manager import AIProviderManager

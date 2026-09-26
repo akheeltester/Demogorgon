@@ -14,7 +14,9 @@ Usage:
 
 from __future__ import annotations
 
+import importlib
 import os
+import sys
 from pathlib import Path
 
 from rich.console import Console
@@ -40,22 +42,262 @@ PROVIDER_DISPLAY = {
     "ollama": {"name": "Ollama (Local)", "icon": "🏠", "env_key": ""},
 }
 
+# provider → (distribution to pip install, importable module to probe)
+_PROVIDER_SDK: dict[str, tuple[str, str]] = {
+    "openai": ("openai", "openai"),
+    "openrouter": ("openai", "openai"),
+    "deepseek": ("openai", "openai"),
+    "anthropic": ("anthropic", "anthropic"),
+    "gemini": ("google-genai", "google.genai"),
+}
+
 
 def _provider_info(provider: str) -> dict:
     return PROVIDER_DISPLAY.get(provider, {"name": provider, "icon": "❓", "env_key": ""})
 
 
+def missing_sdk(provider: str) -> str:
+    """Return the distribution to install for `provider`, or '' if present.
+
+    Surfacing this BEFORE the network test is what turns
+    ``Provider not reachable (FAILED)`` into an actionable instruction.
+    """
+    pkg, module = _PROVIDER_SDK.get(provider, ("", ""))
+    if not pkg:
+        return ""
+    try:
+        importlib.import_module(module)
+    except Exception:
+        return pkg
+    return ""
+
+
+def _read_line(hidden: bool = False) -> str:
+    """Read one line from stdin, optionally with terminal echo suppressed.
+
+    The wizard asks y/n questions directly after API-key prompts.  Pasting a
+    key at one of them used to dump the plaintext key into the terminal
+    scrollback (Rich's ``Prompt.ask`` reads on an echoing tty).  Suppressing
+    echo makes such a mis-paste harmless.
+
+    Raises ``EOFError`` when stdin is exhausted (piped input, closed tty) so
+    callers can abort instead of spinning on an empty string forever.
+    """
+    try:
+        import termios
+
+        fd = sys.stdin.fileno()
+        saved = termios.tcgetattr(fd)
+        if hidden:
+            quiet = termios.tcgetattr(fd)
+            quiet[3] &= ~termios.ECHO
+            termios.tcsetattr(fd, termios.TCSADRAIN, quiet)
+        try:
+            line = sys.stdin.readline()
+            if line == "":
+                raise EOFError
+            return line.rstrip("\n")
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+    except EOFError:
+        raise
+    except Exception:
+        # Non-tty stdin (tests, Windows) — fall back to plain input.
+        return input()
+
+
+def _flush_prompt() -> None:
+    """Make sure a partial-line prompt is visible before we block on stdin."""
+    try:
+        console.file.flush()
+    except Exception:
+        pass
+
+
+def _read_default(prompt: str, default: str, hidden: bool = False) -> str:
+    """Read an optional value, falling back to `default` on empty/EOF."""
+    console.print(prompt, end="")
+    _flush_prompt()
+    try:
+        return _read_line(hidden=hidden).strip() or default
+    except EOFError:
+        return default
+
+
+def _ask_yes_no(question: str, default: bool = True) -> bool:
+    """Ask a y/n question without echoing whatever was pasted into it."""
+    hint = "(Y/n)" if default else "(y/N)"
+    for _ in range(5):
+        console.print(f"{question} {hint} ", end="")
+        _flush_prompt()
+        try:
+            raw = _read_line(hidden=True).strip().lower()
+        except EOFError:
+            return default
+        if not raw:
+            return default
+        if raw in ("y", "yes"):
+            return True
+        if raw in ("n", "no"):
+            return False
+        console.print("[dim]Please answer y or n.[/]")
+    return default
+
+
+def _ask_retry_action() -> str:
+    """After a failed connection test: 'retry' | 'switch' | 'quit'.
+
+    Replaces the old ambiguous ``Prompt.ask("Try again?", y/n)`` whose only
+    exit was a full recursion into ``run_setup_wizard()`` — which re-showed
+    the Existing Configuration panel and lost the user's place.
+    """
+    for _ in range(5):
+        console.print(
+            "Try again? (Enter/y) new key  ·  (p) other provider  ·  (n) quit ",
+            end="",
+        )
+        _flush_prompt()
+        try:
+            raw = _read_line(hidden=True).strip().lower()
+        except EOFError:
+            return "quit"
+        if raw in ("", "y", "yes", "r", "retry"):
+            return "retry"
+        if raw in ("p", "s", "provider", "other"):
+            return "switch"
+        if raw in ("n", "no", "q", "quit", "c", "cancel"):
+            return "quit"
+        console.print("[dim]Please answer y, p or n.[/]")
+    return "quit"
+
+
 def _prompt_api_key() -> str:
     """Prompt for an API key until a non-empty value is entered."""
+    for _ in range(100):
+        console.print("Enter API key ", end="")
+        _flush_prompt()
+        try:
+            api_key = _read_line(hidden=True).strip()
+        except EOFError:
+            raise SystemExit(
+                "Setup aborted: no more input available (stdin closed)."
+            ) from None
+        if api_key:
+            return api_key
+        console.print(
+            "[red]An API key is required.[/] "
+            "Get a free key at https://openrouter.ai/keys (Ctrl+C to cancel)"
+        )
+    raise SystemExit("Setup aborted: no API key entered.")
+
+
+def _ask_choice(question: str, choices: list[str]) -> str:
+    """Ask for one of `choices` with echo suppressed (see ``_read_line``)."""
+    for _ in range(5):
+        console.print(f"{question} ({'/'.join(choices)}) ", end="")
+        _flush_prompt()
+        try:
+            raw = _read_line(hidden=True).strip()
+        except EOFError:
+            break
+        if raw in choices:
+            return raw
+        console.print(f"[dim]Please enter one of: {', '.join(choices)}[/]")
+    raise SystemExit("Setup aborted: no valid selection received.")
+
+
+def _choose_provider(mgr: ProviderConfigManager) -> str:
+    """Step 1 — list providers and return the selected key."""
+    console.print()
+    console.print(Panel("[bold]DEMOGORGON[/] — Configure AI Provider", border_style="cyan"))
+
+    providers = list(PROVIDER_DISPLAY.keys())
+    for i, prov in enumerate(providers, 1):
+        info = _provider_info(prov)
+        configured = _is_configured(mgr, prov)
+        status = "[green]✓ configured[/]" if configured else "[dim]not configured[/]"
+        console.print(f"  {i}. {info['icon']}  {info['name']}  {status}")
+
+    console.print()
+    choice = _ask_choice("Select provider", [str(i) for i in range(1, len(providers) + 1)])
+    return providers[int(choice) - 1]
+
+
+async def _collect_credentials_and_test(
+    mgr: ProviderConfigManager,
+    selected_provider: str,
+    info: dict,
+) -> tuple[str, str] | str | None:
+    """Steps 2–4: gather credentials, verify the connection, retry in place.
+
+    Returns ``(api_key, base_url)`` on success, ``"switch"`` to re-choose the
+    provider, or ``None`` to abandon setup.  Never restarts the wizard.
+    """
+    # ── Step 2: API key ──────────────────────────────────────────
     api_key = ""
-    while not api_key:
-        api_key = Prompt.ask("Enter API key", password=True).strip()
+    if selected_provider == "ollama":
+        console.print("[dim]Ollama runs locally — no API key needed[/]")
+    else:
+        env_key = info.get("env_key", "")
+        if env_key and os.environ.get(env_key):
+            console.print("Found API key in environment — will use it [dim](hidden)[/]")
+            if _ask_yes_no("Use this key?", default=True):
+                api_key = os.environ[env_key]
         if not api_key:
-            console.print(
-                "[red]An API key is required.[/] "
-                "Get a free key at https://openrouter.ai/keys (Ctrl+C to cancel)"
+            existing = mgr.get_profile(selected_provider)
+            if existing and existing.api_key:
+                console.print("Found stored key for this provider [dim](hidden)[/]")
+                if _ask_yes_no("Use stored key?", default=True):
+                    api_key = existing.api_key
+        if not api_key:
+            api_key = _prompt_api_key()
+
+    # ── Step 3: base URL ─────────────────────────────────────────
+    base_url = ""
+    if selected_provider == "openrouter":
+        base_url = "https://openrouter.ai/api/v1"
+    elif selected_provider == "ollama":
+        base_url = _read_default(
+            "Ollama base URL (http://localhost:11434/v1) ",
+            "http://localhost:11434/v1",
+            hidden=True,
+        )
+
+    # ── Step 4: connection test (bounded retry) ──────────────────
+    while True:
+        pkg = missing_sdk(selected_provider)
+        if pkg:
+            console.print(f"\n  [red]✗ Missing dependency for {selected_provider}: {pkg}[/]")
+            console.print(f"    [yellow]Install it:[/] pip install {pkg}")
+            result = {"success": False, "error": f"{pkg} is not installed"}
+        else:
+            console.print("\n[cyan]Testing provider...[/]")
+            result = await test_provider_connection(selected_provider, api_key, base_url)
+
+        if result.get("success"):
+            console.print("  [green]✓ Authentication successful[/]")
+            console.print(f"  [green]✓ Model available: {result.get('model', 'unknown')}[/]")
+            if result.get("structured_output"):
+                console.print("  [green]✓ Structured output supported[/]")
+            else:
+                console.print("  [yellow]⚠ Structured output test failed (may still work)[/]")
+            return api_key, base_url
+
+        err = redact_secrets(result.get("error", "unknown"))
+        console.print(f"  [red]✗ Connection failed: {err}[/]")
+        action = _ask_retry_action()
+        if action == "switch":
+            return "switch"
+        if action == "quit":
+            return None
+        # retry — always re-prompt the value that could be wrong
+        if selected_provider == "ollama":
+            fallback = base_url or "http://localhost:11434/v1"
+            base_url = _read_default(
+                f"Ollama base URL ({fallback}) ", fallback, hidden=True
             )
-    return api_key
+        else:
+            api_key = _prompt_api_key()
 
 
 def _next_steps_panel() -> Panel:
@@ -99,89 +341,28 @@ async def run_setup_wizard(existing_config_only: bool = False) -> ProviderProfil
         if existing_config_only:
             return active
 
-        use_existing = Prompt.ask(
-            "Use existing configuration?",
-            choices=["y", "n"],
-            default="y",
-        )
-        if use_existing == "y":
+        if _ask_yes_no("Use existing configuration?", default=True):
             return active
 
-    # ── Step 1: Choose provider ──────────────────────────────────
+    # ── Steps 1–4: provider, key, base URL, connection test ──────
+    # Bounded in-place retry.  The old code did
+    # ``return await run_setup_wizard()`` on failure, which restarted the
+    # whole wizard (re-showing the Existing Configuration panel) and made a
+    # bad key look like an infinite loop.
+    while True:
+        selected_provider = _choose_provider(mgr)
+        info = _provider_info(selected_provider)
+        console.print(f"\nSelected: [bold]{info['name']}[/]")
 
-    console.print()
-    console.print(Panel("[bold]DEMOGORGON[/] — Configure AI Provider", border_style="cyan"))
-
-    providers = list(PROVIDER_DISPLAY.keys())
-    for i, prov in enumerate(providers, 1):
-        info = _provider_info(prov)
-        configured = _is_configured(mgr, prov)
-        status = "[green]✓ configured[/]" if configured else "[dim]not configured[/]"
-        console.print(f"  {i}. {info['icon']}  {info['name']}  {status}")
-
-    console.print()
-    choice = Prompt.ask("Select provider", choices=[str(i) for i in range(1, len(providers) + 1)])
-    selected_provider = providers[int(choice) - 1]
-    info = _provider_info(selected_provider)
-
-    console.print(f"\nSelected: [bold]{info['name']}[/]")
-
-    # ── Step 2: API Key ──────────────────────────────────────────
-
-    api_key = ""
-
-    if selected_provider == "ollama":
-        # Ollama doesn't need an API key
-        console.print("[dim]Ollama runs locally — no API key needed[/]")
-    else:
-        # Check env var first
-        env_key = info.get("env_key", "")
-        if env_key and os.environ.get(env_key):
-            api_key = os.environ[env_key]
-            console.print("Found API key in environment — will use it [dim](hidden)[/]")
-            use_env = Prompt.ask("Use this key?", choices=["y", "n"], default="y")
-            if use_env == "n":
-                api_key = _prompt_api_key()
-        else:
-            # Check secure config
-            existing = mgr.get_profile(selected_provider)
-            if existing and existing.api_key:
-                console.print("Found stored key for this provider — will use it [dim](hidden)[/]")
-                use_stored = Prompt.ask("Use stored key?", choices=["y", "n"], default="y")
-                if use_stored == "y":
-                    api_key = existing.api_key
-                else:
-                    api_key = _prompt_api_key()
-            else:
-                api_key = _prompt_api_key()
-
-    # ── Step 3: Base URL (optional) ──────────────────────────────
-
-    base_url = ""
-    if selected_provider == "openrouter":
-        base_url = "https://openrouter.ai/api/v1"
-    elif selected_provider == "ollama":
-        base_url = Prompt.ask("Ollama base URL", default="http://localhost:11434/v1")
-
-    # ── Step 4: Test connection ──────────────────────────────────
-
-    if api_key or selected_provider == "ollama":
-        console.print("\n[cyan]Testing provider...[/]")
-        result = await test_provider_connection(selected_provider, api_key, base_url)
-
-        if result["success"]:
-            console.print("  [green]✓ Authentication successful[/]")
-            console.print(f"  [green]✓ Model available: {result.get('model', 'unknown')}[/]")
-            if result.get("structured_output"):
-                console.print("  [green]✓ Structured output supported[/]")
-            else:
-                console.print("  [yellow]⚠ Structured output test failed (may still work)[/]")
-        else:
-            err = redact_secrets(result.get("error", "unknown"))
-            console.print(f"  [red]✗ Connection failed: {err}[/]")
-            retry = Prompt.ask("Try again?", choices=["y", "n"], default="y")
-            if retry == "y":
-                return await run_setup_wizard()
+        outcome = await _collect_credentials_and_test(mgr, selected_provider, info)
+        if outcome == "switch":
+            console.print()
+            continue
+        if outcome is None:
+            console.print("[yellow]Setup cancelled — nothing was saved.[/]")
+            return None
+        api_key, base_url = outcome
+        break
 
     # ── Step 5: Discover models ──────────────────────────────────
 

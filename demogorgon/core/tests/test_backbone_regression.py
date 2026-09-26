@@ -957,3 +957,455 @@ class TestCoverage:
         assert "coverage" in result
         assert "coverage_summary" in result
         assert isinstance(result["coverage"]["overall"], float)
+
+
+# ── Phase 16: provider SDKs, health detail, wizard flow, circuits ──────────
+
+class TestProviderSDKDeps:
+    """Gemini/Anthropic were offered by the wizard but never declared, so
+    choosing them could only ever fail with `dependency_missing`."""
+
+    @staticmethod
+    def _root():
+        from pathlib import Path
+        return Path(__file__).resolve().parents[3]
+
+    def test_provider_sdks_are_declared(self):
+        root = self._root()
+        pyproject = (root / "pyproject.toml").read_text()
+        requirements = (root / "requirements.txt").read_text()
+        assert "google-genai" in pyproject, "pyproject must declare google-genai"
+        assert "google-genai" in requirements, "requirements must declare google-genai"
+        assert "anthropic" in pyproject
+        assert "anthropic" in requirements
+
+    def test_missing_sdk_reports_distribution_when_absent(self, monkeypatch):
+        from demogorgon.config import terminal_setup as ts
+
+        def boom(name):
+            raise ImportError(name)
+
+        monkeypatch.setattr(ts.importlib, "import_module", boom)
+        assert ts.missing_sdk("gemini") == "google-genai"
+        assert ts.missing_sdk("anthropic") == "anthropic"
+        assert ts.missing_sdk("openrouter") == "openai"
+        assert ts.missing_sdk("ollama") == "", "ollama needs no SDK"
+
+    def test_missing_sdk_empty_when_importable(self, monkeypatch):
+        from demogorgon.config import terminal_setup as ts
+
+        monkeypatch.setattr(ts.importlib, "import_module", lambda name: object())
+        assert ts.missing_sdk("gemini") == ""
+        assert ts.missing_sdk("anthropic") == ""
+
+
+class TestHealthCheckDetail:
+    """`health_check()` returned a bare bool, so the wizard printed
+    `Provider not reachable (FAILED)` instead of the real reason."""
+
+    @staticmethod
+    def _provider(error: str = ""):
+        from demogorgon.llm.base import LLMProvider, LLMResponse
+
+        class P(LLMProvider):
+            name = "fake"
+            models = ["fake-1"]
+
+            async def generate(self, messages, model=None, temperature=0.1,
+                               max_tokens=4096, response_format=None):
+                return LLMResponse(content="" if error else "ok", error=error)
+
+        return P()
+
+    def test_health_check_returns_concrete_reason(self):
+        reason = run_async(
+            self._provider(
+                "google-genai package not installed. Run: pip install google-genai"
+            ).health_check()
+        )
+        assert reason == (
+            "google-genai package not installed. Run: pip install google-genai"
+        )
+
+    def test_health_check_returns_none_when_healthy(self):
+        assert run_async(self._provider().health_check()) is None
+
+    def test_health_check_surfaces_raised_exception(self):
+        from demogorgon.llm.base import LLMProvider
+
+        class Boom(LLMProvider):
+            name = "boom"
+            models = ["m"]
+
+            async def generate(self, messages, model=None, temperature=0.1,
+                               max_tokens=4096, response_format=None):
+                raise RuntimeError("connection reset by peer")
+
+        reason = run_async(Boom().health_check())
+        assert reason == "connection reset by peer"
+
+    def test_manager_health_carries_reason(self):
+        from demogorgon.llm.manager import AIProviderManager
+
+        mgr = AIProviderManager()
+        mgr._env = {}
+        mgr._providers["gemini"] = self._provider("google-genai package not installed")
+        mgr._active_provider = "gemini"
+        mgr._active_model = "gemini-2.0-flash"
+
+        health = run_async(mgr.health_check())
+        assert health["status"] == "unhealthy"
+        assert "google-genai" in health["connectivity"]
+        assert "google-genai" in health["error"]
+
+    def test_connection_probe_reports_sdk_reason(self, monkeypatch):
+        from demogorgon.config import model_discovery
+        from demogorgon.llm import manager as mgr_mod
+
+        class FakeManager:
+            _active_model = "gemini-2.0-flash"
+
+            def configure_from_params(self, **kw):
+                pass
+
+            async def health_check(self):
+                return {
+                    "status": "unhealthy",
+                    "connectivity": "FAILED: google-genai package not installed",
+                    "error": "google-genai package not installed. Run: pip install google-genai",
+                }
+
+            async def smoke_test(self):
+                raise AssertionError("smoke test must not run when health fails")
+
+        monkeypatch.setattr(mgr_mod, "LLMManager", FakeManager, raising=False)
+        result = run_async(
+            model_discovery.test_provider_connection("gemini", api_key="g-key")
+        )
+        assert result["success"] is False
+        assert "google-genai" in (result["error"] or "")
+
+    def test_provider_config_manager_health_gate(self, monkeypatch):
+        """`test_provider` truthiness-checked an always-truthy dict."""
+        from demogorgon.config import provider_config as pc
+
+        class FakeManager:
+            _active_model = "m"
+
+            def configure_from_params(self, **kw):
+                pass
+
+            async def health_check(self):
+                return {"status": "unhealthy", "error": "bad key", "latency": 0}
+
+            async def smoke_test(self):
+                raise AssertionError("must not run when health fails")
+
+        # `_test()` does `from ..llm.manager import LLMManager` at call time
+        import demogorgon.llm.manager as mgr_mod
+        monkeypatch.setattr(mgr_mod, "LLMManager", FakeManager, raising=False)
+        # `test_provider` is a synchronous facade over `_test()`
+        result = pc.ProviderConfigManager().test_provider(
+            "openrouter", api_key="sk-x"
+        )
+        assert result["success"] is False
+        assert "bad key" in result["error"]
+
+
+class TestSetupWizardFlow:
+    """Retry used to recurse into `run_setup_wizard()`, re-showing the
+    Existing Configuration panel, and y/n prompts echoed pasted API keys."""
+
+    @staticmethod
+    def _ts():
+        from demogorgon.config import terminal_setup as ts
+        return ts
+
+    def test_retry_action_decoding(self, monkeypatch):
+        ts = self._ts()
+        answers = iter(["", "y", "p", "n"])
+        monkeypatch.setattr(
+            ts, "_read_line", lambda hidden=False: next(answers)
+        )
+        assert ts._ask_retry_action() == "retry"
+        assert ts._ask_retry_action() == "retry"
+        assert ts._ask_retry_action() == "switch"
+        assert ts._ask_retry_action() == "quit"
+
+    def test_yes_no_hides_pasted_secret(self, monkeypatch):
+        from rich.console import Console
+
+        ts = self._ts()
+        recorder = Console(record=True, width=200)
+        monkeypatch.setattr(ts, "console", recorder)
+
+        seen = []
+        monkeypatch.setattr(
+            ts, "_read_line",
+            lambda hidden=False: (seen.append(hidden), "AQ.Leaked-Api-Key")[1],
+        )
+        # Never a valid y/n → falls back to the default, key never printed
+        assert ts._ask_yes_no("Use this key?") is True
+        assert seen and all(seen), "every read must suppress echo"
+        assert "AQ.Leaked-Api-Key" not in recorder.export_text()
+
+    def test_yes_no_accepts_plain_answers(self, monkeypatch):
+        ts = self._ts()
+        monkeypatch.setattr(ts, "_read_line", lambda hidden=False: "n")
+        assert ts._ask_yes_no("Continue?") is False
+        monkeypatch.setattr(ts, "_read_line", lambda hidden=False: "")
+        assert ts._ask_yes_no("Continue?", default=False) is False
+
+    def test_api_key_prompt_hides_and_rejects_empty(self, monkeypatch):
+        ts = self._ts()
+        answers = iter(["", "sk-real-key"])
+        monkeypatch.setattr(ts, "_read_line", lambda hidden=False: next(answers))
+        assert ts._prompt_api_key() == "sk-real-key"
+
+    async def test_failed_connection_switches_provider_without_restart(self, monkeypatch):
+        ts = self._ts()
+        monkeypatch.setattr(ts, "missing_sdk", lambda p: "")
+        monkeypatch.setattr(ts, "_ask_yes_no", lambda *a, **k: False)
+        monkeypatch.setattr(ts, "_prompt_api_key", lambda: "sk-retry")
+
+        async def fail(provider, api_key, base_url=""):
+            return {"success": False, "error": "bad key"}
+
+        monkeypatch.setattr(ts, "test_provider_connection", fail)
+        monkeypatch.setattr(ts, "_ask_retry_action", lambda: "switch")
+
+        mgr = ts.ProviderConfigManager()
+        out = await ts._collect_credentials_and_test(
+            mgr, "openrouter", ts._provider_info("openrouter")
+        )
+        assert out == "switch", "must ask for another provider, not restart the wizard"
+
+    async def test_failed_connection_retry_reprompts_key(self, monkeypatch):
+        ts = self._ts()
+        monkeypatch.setattr(ts, "missing_sdk", lambda p: "")
+        monkeypatch.setattr(ts, "_ask_yes_no", lambda *a, **k: False)
+
+        attempts = []
+
+        async def fail(provider, api_key, base_url=""):
+            attempts.append(api_key)
+            return {"success": False, "error": "bad key"} if len(attempts) == 1 \
+                else {"success": True, "model": "m", "structured_output": True}
+
+        keys = iter(["sk-first", "sk-second"])
+        monkeypatch.setattr(ts, "test_provider_connection", fail)
+        monkeypatch.setattr(ts, "_prompt_api_key", lambda: next(keys))
+        monkeypatch.setattr(ts, "_ask_retry_action", lambda: "retry")
+
+        mgr = ts.ProviderConfigManager()
+        out = await ts._collect_credentials_and_test(
+            mgr, "openrouter", ts._provider_info("openrouter")
+        )
+        assert out == ("sk-second", "https://openrouter.ai/api/v1")
+        assert attempts == ["sk-first", "sk-second"]
+
+    async def test_missing_sdk_is_reported_before_any_network_call(self, monkeypatch):
+        ts = self._ts()
+        monkeypatch.setattr(ts, "_ask_yes_no", lambda *a, **k: False)
+        monkeypatch.setattr(ts, "_prompt_api_key", lambda: "g-key")
+        monkeypatch.setattr(ts, "missing_sdk", lambda p: "google-genai")
+
+        async def no_network(*a, **k):
+            raise AssertionError("network test must not run when the SDK is missing")
+
+        monkeypatch.setattr(ts, "test_provider_connection", no_network)
+        monkeypatch.setattr(ts, "_ask_retry_action", lambda: "quit")
+
+        mgr = ts.ProviderConfigManager()
+        out = await ts._collect_credentials_and_test(
+            mgr, "gemini", ts._provider_info("gemini")
+        )
+        assert out is None
+
+
+class TestCircuitStatusIntegrity:
+    """The capability probe runs BEFORE research, so a provider that fails
+    mid-run opened its circuit unnoticed and the run reported COMPLETED."""
+
+    @staticmethod
+    def _manager(open_circuits=None, exhausted=False):
+        from demogorgon.llm.manager import AIProviderManager
+
+        mgr = AIProviderManager()
+        mgr._env = {}
+        mgr._active_provider = "gemini"
+        mgr._active_model = "gemini-2.0-flash"
+        mgr._providers["gemini"] = object()
+        for key, reason in (open_circuits or {}).items():
+            mgr._circuit_open[key] = reason
+        if exhausted:
+            mgr._circuit_open.setdefault("gemini", "dependency_missing: no sdk")
+        return mgr
+
+    def test_circuit_state_is_inert_for_plain_callables(self):
+        from demogorgon.core.capabilities import llm_circuit_state
+
+        assert llm_circuit_state(None) == {"open": {}, "exhausted": False}
+        assert llm_circuit_state(lambda *a, **k: None) == {
+            "open": {}, "exhausted": False
+        }
+
+    def test_circuit_state_reads_bound_manager(self):
+        from demogorgon.core.capabilities import llm_circuit_state
+
+        mgr = self._manager({"gemini": "dependency_missing: google-genai missing"})
+        state = llm_circuit_state(mgr.generate)
+        assert "gemini" in state["open"]
+        assert state["exhausted"] is True
+
+    def test_probe_llm_reports_open_circuit(self):
+        from demogorgon.core.capabilities.environment import _probe_llm
+        from demogorgon.core.capabilities.registry import CapabilityStatus
+
+        mgr = self._manager({"gemini": "dependency_missing: google-genai missing"})
+        status, detail = _probe_llm(mgr.generate)
+        # Only provider, circuit open → the LLM cannot be reached at all
+        assert status is CapabilityStatus.UNAVAILABLE
+        assert "circuit-open" in detail
+
+    def test_probe_llm_degraded_when_a_fallback_remains(self, monkeypatch):
+        from demogorgon.core.capabilities.environment import _probe_llm
+        from demogorgon.core.capabilities.registry import CapabilityStatus
+
+        mgr = self._manager({"gemini": "dependency_missing: google-genai missing"})
+        mgr._providers["fallback_openrouter"] = object()
+        monkeypatch.setattr(mgr, "_fallback_chain", ["fallback_openrouter"])
+
+        status, detail = _probe_llm(mgr.generate)
+        assert status is CapabilityStatus.DEGRADED
+        assert "circuit open" in detail
+
+    def test_probe_llm_available_with_no_circuits(self):
+        from demogorgon.core.capabilities.environment import _probe_llm
+        from demogorgon.core.capabilities.registry import CapabilityStatus
+
+        mgr = self._manager()
+        status, detail = _probe_llm(mgr.generate)
+        assert status is CapabilityStatus.AVAILABLE
+        assert detail == "llm_generate injected"
+
+    def test_runner_notes_open_circuits_and_degrades(self, tmp_path):
+        mgr = self._manager({"gemini": "dependency_missing: google-genai missing"})
+        runner = AutonomousRunner(
+            engagement=make_engagement(),
+            config=RunnerConfig(max_iterations=1),
+            llm_generate=mgr.generate,
+            workspace_dir=str(tmp_path),
+        )
+        runner._capability_notes = []
+        runner._note_llm_circuits()
+        assert runner._capability_notes, "open circuits must become a note"
+        status = runner._derive_status(
+            "completed", {"findings": [{"title": "x"}]}, None, None
+        )
+        assert status == "degraded", "a run whose LLM never answered is not completed"
+
+    def test_runner_is_silent_when_circuits_closed(self, tmp_path):
+        mgr = self._manager()
+        runner = AutonomousRunner(
+            engagement=make_engagement(),
+            config=RunnerConfig(max_iterations=1),
+            llm_generate=mgr.generate,
+            workspace_dir=str(tmp_path),
+        )
+        runner._capability_notes = []
+        runner._note_llm_circuits()
+        assert runner._capability_notes == []
+
+    def test_full_run_reports_degraded_when_llm_circuit_opens(self, tmp_path):
+        from demogorgon.core.capabilities.environment import _probe_llm
+
+        mgr = self._manager()
+        # The probe sees a healthy manager at t=0 …
+        assert _probe_llm(mgr.generate)[0].value == "available"
+
+        runner = AutonomousRunner(
+            engagement=make_engagement(),
+            config=RunnerConfig(max_iterations=1),
+            llm_generate=mgr.generate,
+            workspace_dir=str(tmp_path),
+        )
+        # … then research fails the only provider, mid-run.
+        mgr._circuit_open["gemini"] = "dependency_missing: google-genai missing"
+        runner._capability_notes = []
+        runner._note_llm_circuits()
+        result = run_async(runner.run())
+        assert result["status"] != "completed"
+        assert any("circuit" in n for n in result["status_notes"])
+
+
+class TestObservedIsNotTested:
+    """`observe`/`recon` actions were counted as tested endpoints, so a run
+    that never sent a request still graded coverage A."""
+
+    @staticmethod
+    def _loop():
+        return ResearchLoopForTest.make()
+
+    @staticmethod
+    def _decision(action, target="https://x.test/api"):
+        from demogorgon.core.interfaces import Decision
+
+        return Decision(action=action, target=target, reason="because")
+
+    async def test_observe_is_not_a_tested_endpoint(self):
+        from demogorgon.core.decision import ActionType
+
+        loop = self._loop()
+        decision = self._decision(ActionType.OBSERVE)
+
+        async def reason(*_a, **_k):
+            return decision
+
+        loop.brain.reason_next_action = reason
+        out = await loop._iteration_cycle()
+
+        assert out["action"] == "observe"
+        assert loop._tested_endpoints == set()
+        assert f"observe:{decision.target}" in loop._seen_actions
+
+    async def test_observe_is_still_deduped(self):
+        loop = self._loop()
+        from demogorgon.core.decision import ActionType
+
+        decision = self._decision(ActionType.OBSERVE)
+
+        async def reason(*_a, **_k):
+            return decision
+
+        loop.brain.reason_next_action = reason
+        first = await loop._iteration_cycle()
+        second = await loop._iteration_cycle()
+        assert first["action"] == "observe"
+        assert second["action"] == "skip"
+        assert loop._tested_endpoints == set()
+
+    async def test_executed_plan_is_a_tested_endpoint(self):
+        loop = self._loop()
+        from demogorgon.core.decision import ActionType
+
+        decision = self._decision(ActionType.TEST_ENDPOINT, "https://x.test/api")
+
+        async def reason(*_a, **_k):
+            return decision
+
+        async def plan(*_a, **_k):
+            return {"steps": []}
+
+        async def execute(*_a, **_k):
+            return {"success": True, "evidence": [], "observations": []}
+
+        loop.brain.reason_next_action = reason
+        loop.brain.plan_experiment = plan
+        loop.executor.execute = execute
+
+        out = await loop._iteration_cycle()
+        assert out["action"] == "test_endpoint"
+        assert "test_endpoint:https://x.test/api" in loop._tested_endpoints
+        stats = loop._generate_report()["stats"]
+        assert stats["tested_endpoints"] == 1

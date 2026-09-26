@@ -649,13 +649,19 @@ class AIProviderManager:
         provider = self._providers[self._active_provider]
         try:
             start = time.time()
-            ok = await provider.health_check()
+            reason = await provider.health_check()
             latency = time.time() - start
-            result["connectivity"] = "OK" if ok else "FAILED"
+            # health_check() returns None when healthy, else the concrete
+            # reason (e.g. "google-genai package not installed").  Carrying
+            # the reason through is what makes the wizard actionable.
+            healthy = reason is None
+            result["connectivity"] = "OK" if healthy else f"FAILED: {reason}"
+            result["error"] = reason
             result["latency"] = round(latency, 2)
-            result["status"] = "healthy" if ok else "unhealthy"
+            result["status"] = "healthy" if healthy else "unhealthy"
         except Exception as e:
             result["connectivity"] = f"FAILED: {e}"
+            result["error"] = str(e)
             result["status"] = "error"
 
         return result

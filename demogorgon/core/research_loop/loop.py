@@ -144,6 +144,11 @@ class ResearchLoop:
         self._consecutive_failures = 0
         self._stagnation_count = 0
         self._strategy = "explore"  # explore, validate, exploit
+        # Everything the loop has already acted on (dedupe, incl. observe).
+        self._seen_actions: set[str] = set()
+        # Only actions that really executed a plan — this is what coverage
+        # reports as "endpoints tested".  observe/recon must NOT land here or
+        # a run that never sent a request still grades A.
         self._tested_endpoints: set[str] = set()
 
         # Phase 11: cooperative cancellation flag (asyncio.Event or any
@@ -275,9 +280,9 @@ class ResearchLoop:
             if decision.action == ActionType.STOP:
                 return {"action": "stop", "reason": decision.reason}
 
-            # 3. Check if already tested
+            # 3. Check if already acted on
             action_key = f"{decision.action.value}:{decision.target}"
-            if action_key in self._tested_endpoints:
+            if action_key in self._seen_actions:
                 logger.debug(f"Already tested: {action_key}")
                 self._stagnation_count += 1
                 return {"action": "skip", "reason": "already tested"}
@@ -448,7 +453,8 @@ class ResearchLoop:
                         cycle_id=cycle_id,
                     )
 
-                # Mark as tested
+                # Mark as tested (only an executed plan counts as a test)
+                self._seen_actions.add(action_key)
                 self._tested_endpoints.add(action_key)
 
                 return {
@@ -458,12 +464,13 @@ class ResearchLoop:
                     "evidence_count": len(result.get("evidence", [])),
                 }
             else:
-                # No plan needed (recon, observe, etc.)
+                # No plan needed (recon, observe, etc.) — dedupe it, but do
+                # NOT count it as a tested endpoint: nothing was sent.
                 self.brain.case.add_observation(
                     description=f"Executed {decision.action.value} on {decision.target}",
                     source="brain",
                 )
-                self._tested_endpoints.add(action_key)
+                self._seen_actions.add(action_key)
                 return {"action": decision.action.value, "target": decision.target}
 
         except Exception as e:

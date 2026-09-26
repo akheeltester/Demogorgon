@@ -20,6 +20,7 @@ import asyncio
 from pathlib import Path
 
 from rich.console import Console
+from rich.markup import escape as _escape
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
@@ -444,7 +445,9 @@ async def cmd_doctor():
             health = await mgr.health_check()
         connectivity = health.get("connectivity", "UNKNOWN")
         status_style = "green" if connectivity == "OK" else "red"
-        llm_table.add_row("Connectivity", f"[{status_style}]{connectivity}[/{status_style}]")
+        # Reasons can contain arbitrary SDK text — escape Rich markup.
+        shown = _escape(str(connectivity))
+        llm_table.add_row("Connectivity", f"[{status_style}]{shown}[/{status_style}]")
         if health.get("latency"):
             llm_table.add_row("Latency", f"{health['latency']:.2f}s")
     else:

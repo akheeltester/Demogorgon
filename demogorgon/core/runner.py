@@ -253,6 +253,11 @@ class AutonomousRunner:
             state.status = "researching"
             self.state_manager.save_state(state)
             research_report = await self._run_research(state)
+            # A provider can fail for the first time only during research
+            # (missing SDK, 401, …), opening its circuit AFTER the probe at
+            # step 2b already reported AVAILABLE. Re-check so a run whose LLM
+            # calls all failed cannot be summarised as COMPLETED.
+            self._note_llm_circuits()
             if research_report.get("error") and not research_report.get("findings"):
                 failure = str(research_report["error"])
             if research_report.get("cancelled") or self._cancelled:
@@ -308,6 +313,9 @@ class AutonomousRunner:
             logger.exception(f"Engagement failed: {e}")
         finally:
             # 9. Final state — derive status honestly, never blanket "completed"
+            # Re-check circuits too: a run that raised mid-research may have
+            # opened a provider circuit that the t=0 probe never saw.
+            self._note_llm_circuits()
             duration = time.time() - start_time
             if state is not None:
                 if run_status == "cancelled":
@@ -439,6 +447,34 @@ class AutonomousRunner:
             logger.debug(f"Capability probe failed: {e}")
             self._capability_notes.append(f"capability probe failed: {e}")
             return None
+
+    def _note_llm_circuits(self) -> None:
+        """Record LLM circuit-breaker state as capability notes (Phase 16).
+
+        ``_probe_capabilities`` runs before research, so it can only see the
+        state at t=0. This re-reads the manager's circuits and appends a note;
+        ``_derive_status`` then downgrades COMPLETED to DEGRADED, which is the
+        truth when the reasoning engine never actually answered.
+        """
+        try:
+            from .capabilities import llm_circuit_state
+
+            circuits = llm_circuit_state(self.llm_generate)
+        except Exception as e:  # noqa: BLE001 — never fail a run over a note
+            logger.debug(f"LLM circuit check failed: {e}")
+            return
+        opened = circuits.get("open") or {}
+        if not opened and not circuits.get("exhausted"):
+            return
+        detail = "; ".join(f"{k}: {v}" for k, v in opened.items()) or "unknown"
+        if circuits.get("exhausted"):
+            self._capability_notes.append(
+                f"llm: unavailable (all providers circuit-open — {detail})"
+            )
+        else:
+            self._capability_notes.append(
+                f"llm: degraded (circuit open — {detail})"
+            )
 
     def _derive_status(
         self,

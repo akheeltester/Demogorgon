@@ -5,7 +5,7 @@
     )
 """
 
-from .environment import build_environment_registry
+from .environment import build_environment_registry, llm_circuit_state
 from .registry import (
     Capability,
     CapabilityDiagnostic,
@@ -19,4 +19,5 @@ __all__ = [
     "CapabilityRegistry",
     "CapabilityStatus",
     "build_environment_registry",
+    "llm_circuit_state",
 ]

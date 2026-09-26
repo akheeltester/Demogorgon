@@ -44,12 +44,20 @@ class LLMProvider(ABC):
     ) -> LLMResponse:
         pass
 
-    async def health_check(self) -> bool:
+    async def health_check(self) -> str | None:
+        """Return None when the provider answers, else the concrete reason.
+
+        Returning the reason (rather than a bare ``False``) is what lets the
+        setup wizard say ``google-genai package not installed`` instead of the
+        useless ``Provider not reachable (FAILED)``.
+        """
         try:
             resp = await self.generate(
                 [{"role": "user", "content": "Say 'ok'"}],
                 max_tokens=10,
             )
-            return not resp.error
-        except Exception:
-            return False
+        except Exception as e:  # noqa: BLE001 - surface any provider failure
+            return str(e) or type(e).__name__
+        if resp.error:
+            return resp.error
+        return None
