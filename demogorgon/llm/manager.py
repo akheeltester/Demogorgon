@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from demogorgon.llm.base import LLMProvider, LLMResponse
+from demogorgon.llm.errors import LLMErrorKind
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +240,9 @@ class AIProviderManager:
         self._fallback_model: str = ""
         self._max_retries: int = 2
         self._timeout: float = 60.0
+        # Phase 5: ordered fallback chain + per-provider circuit breakers
+        self._fallback_chain: list[str] = []
+        self._circuit_open: dict[str, str] = {}  # provider_key -> reason
 
     def configure(self) -> None:
         """Configure providers from environment variables."""
@@ -410,10 +414,60 @@ class AIProviderManager:
         if not is_fallback:
             self._active_provider = provider_key
             self._active_model = model or PROVIDER_DEFAULTS.get(name, {}).get("model", "gpt-4o-mini")
+        else:
+            if provider_key not in self._fallback_chain:
+                self._fallback_chain.append(provider_key)
         logger.info(
             f"Configured LLM provider: {name} (model: {model})"
             + (" [fallback]" if is_fallback else "")
         )
+
+    @property
+    def fallback_chain(self) -> list[str]:
+        """Ordered fallback provider keys (Phase 5)."""
+        return list(self._fallback_chain)
+
+    @property
+    def open_circuits(self) -> dict[str, str]:
+        """provider_key → reason for providers that must not be tried."""
+        return dict(self._circuit_open)
+
+    def reset_circuits(self) -> None:
+        """Clear circuit-breaker state (used by tests / setup wizard retry)."""
+        self._circuit_open.clear()
+
+    def _candidate_providers(self) -> list[str]:
+        """Active provider first, then configured fallbacks, skipping open circuits."""
+        candidates: list[str] = []
+        if self._active_provider:
+            candidates.append(self._active_provider)
+        # Legacy key convention: fallback_<active> … plus the explicit chain
+        legacy = f"fallback_{self._active_provider}"
+        if legacy in self._providers and legacy not in candidates:
+            candidates.append(legacy)
+        for key in self._fallback_chain:
+            if key not in candidates:
+                candidates.append(key)
+        # any other registered fallbacks (safety net)
+        for key in self._providers:
+            if key.startswith("fallback_") and key not in candidates:
+                candidates.append(key)
+        return [
+            k for k in candidates
+            if k in self._providers and k not in self._circuit_open
+        ]
+
+    def _note_failure(self, provider_key: str, error: str) -> LLMErrorKind:
+        """Classify an error, open the circuit if needed, return the kind."""
+        from .errors import CIRCUIT_OPEN_KINDS, classify_llm_error
+
+        kind = classify_llm_error(error)
+        if kind in CIRCUIT_OPEN_KINDS:
+            self._circuit_open[provider_key] = f"{kind.value}: {error[:200]}"
+            logger.warning(
+                f"Circuit OPEN for provider '{provider_key}' ({kind.value})"
+            )
+        return kind
 
     def get_provider(self) -> LLMProvider:
         """Get the active LLM provider."""
@@ -455,47 +509,62 @@ class AIProviderManager:
         max_tokens: int = 4096,
         response_format: dict | None = None,
     ) -> LLMResponse:
-        """Generate a response with retry and fallback.
+        """Generate a response with retry and fallback (Phase 5 chain).
 
         Flow:
-        1. Try active provider (with retries)
-        2. On failure, try fallback provider (with retries)
-        3. On failure, return error response
+        1. Walk the candidate chain (active → fallbacks), skipping open circuits.
+        2. Each candidate gets bounded retries per error classification.
+        3. If nothing serves the request, return an error LLMResponse —
+           callers that prefer exceptions use :meth:`generate_or_raise`.
         """
         if not self._active_provider:
             self.configure()
 
-        # Try active provider
-        resp = await self._generate_with_retry(
-            provider_key=self._active_provider,
-            messages=messages,
-            model=model,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            response_format=response_format,
-        )
-        if not resp.error:
-            return resp
+        candidates = self._candidate_providers()
+        if not candidates:
+            # everything is circuit-open or nothing configured
+            reason = (
+                f"All providers unavailable (circuits open: {self._circuit_open})"
+                if self._circuit_open else "No LLM provider configured"
+            )
+            return LLMResponse(content="", error=reason)
 
-        logger.warning(
-            f"Active provider '{self._active_provider}' failed: {resp.error[:100]}"
-        )
-
-        # Try fallback
-        fallback_key = f"fallback_{self._active_provider}"
-        if fallback_key in self._providers:
-            logger.info(f"Trying fallback provider: {fallback_key}")
-            resp2 = await self._generate_with_retry(
-                provider_key=fallback_key,
+        errors: list[str] = []
+        for key in candidates:
+            resp = await self._generate_with_retry(
+                provider_key=key,
                 messages=messages,
                 model=model,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 response_format=response_format,
             )
-            if not resp2.error:
-                return resp2
+            if not resp.error:
+                if key != self._active_provider:
+                    logger.info(f"Served by fallback provider: {key}")
+                return resp
+            errors.append(f"{key}: {resp.error[:200]}")
 
+        return LLMResponse(
+            content="",
+            error=f"All retries failed: {'; '.join(errors)[:500]}",
+        )
+
+    async def generate_or_raise(
+        self,
+        messages: list[dict[str, str]],
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """Like :meth:`generate` but raises LLMUnavailableError on failure.
+
+        Used by callers that must switch modes (LLM → deterministic) instead
+        of silently receiving an error string.
+        """
+        resp = await self.generate(messages, **kwargs)
+        if resp.error:
+            from .errors import LLMUnavailableError, classify_llm_error
+
+            raise LLMUnavailableError(resp.error, classify_llm_error(resp.error))
         return resp
 
     async def _generate_with_retry(
@@ -507,7 +576,14 @@ class AIProviderManager:
         max_tokens: int,
         response_format: dict | None,
     ) -> LLMResponse:
-        """Generate with exponential backoff retry."""
+        """Generate with classification-driven retry (Phase 5).
+
+        - TRANSIENT / RATE_LIMIT / UNKNOWN → bounded retries with backoff
+        - AUTHENTICATION / DEPENDENCY_MISSING / INVALID_REQUEST / CONTENT_FILTER
+          → no retry, circuit opens for auth + dependency failures
+        """
+        from .errors import RETRYABLE_KINDS, classify_llm_error
+
         provider = self._providers.get(provider_key)
         if not provider:
             return LLMResponse(content="", error=f"Provider '{provider_key}' not configured")
@@ -521,22 +597,28 @@ class AIProviderManager:
                 if not resp.error:
                     return resp
                 last_error = resp.error
-
-                # Don't retry on auth errors
-                if any(
-                    kw in resp.error.lower()
-                    for kw in ("auth", "api_key", "unauthorized", "401", "403")
-                ):
-                    return resp
-
-                # Don't retry on rate limits (just return the error)
-                if any(kw in resp.error.lower() for kw in ("429", "rate limit")):
+                kind = classify_llm_error(resp.error)
+                if kind not in RETRYABLE_KINDS:
+                    self._note_failure(provider_key, resp.error)
                     return resp
 
             except asyncio.TimeoutError:
                 last_error = f"Timeout after {self._timeout}s"
+                kind = classify_llm_error(last_error)
+                if kind not in RETRYABLE_KINDS:
+                    self._note_failure(provider_key, last_error)
+                    return LLMResponse(content="", error=last_error)
+            except ImportError as e:
+                # dependency missing (e.g. google-genai not installed)
+                last_error = str(e)
+                self._note_failure(provider_key, last_error)
+                return LLMResponse(content="", error=last_error)
             except Exception as e:
                 last_error = str(e)
+                kind = classify_llm_error(e)
+                if kind not in RETRYABLE_KINDS:
+                    self._note_failure(provider_key, last_error)
+                    return LLMResponse(content="", error=last_error)
 
             # Exponential backoff
             if attempt < self._max_retries:
@@ -544,7 +626,9 @@ class AIProviderManager:
                 logger.debug(f"Retry {attempt + 1}/{self._max_retries} in {delay}s")
                 await asyncio.sleep(delay)
 
-        return LLMResponse(content="", error=f"All retries failed: {last_error}")
+        final = f"All retries failed: {last_error}"
+        self._note_failure(provider_key, final)
+        return LLMResponse(content="", error=final)
 
     async def health_check(self) -> dict[str, Any]:
         """Run health check on the configured provider."""

@@ -55,8 +55,33 @@ async def _run_engagement(engagement, resume: bool = False):
     llm_generate = llm_manager.generate if llm_manager.available else None
 
     if not llm_generate:
-        console.print("[yellow]No LLM provider configured — observation-only mode.[/yellow]")
-        console.print("  Run [cyan]demogorgon setup[/cyan] or set DEMOGORGON_LLM_PROVIDER / DEMOGORGON_API_KEY")
+        console.print("[yellow]No LLM provider configured — deterministic (safe-GET) mode.[/yellow]")
+        console.print("  Run [cyan]demogorgon setup[/cyan] or set DEMOGORGON_LLM_PROVIDER / "
+                      "DEMOGORGON_API_KEY")
+
+    # Phase 5: recon needs a real tool registry + executor + HTTP client.
+    # Previously the runner got neither, so every recon stage silently died.
+    tool_registry = None
+    http_client = None
+    try:
+        from demogorgon.tools.registry import create_default_registry
+        tool_registry = create_default_registry()
+        await tool_registry.discover_all()
+        available = tool_registry.get_available_tools()
+        if available:
+            console.print(f"  Tools:    {len(available)} available ({', '.join(available[:6])})")
+    except Exception as e:
+        console.print(f"[yellow]Tool registry unavailable: {e}[/yellow]")
+
+    try:
+        import httpx
+        http_client = httpx.AsyncClient(
+            timeout=15.0,
+            follow_redirects=True,
+            headers={"User-Agent": "Demogorgon/3.0 (bug bounty research)"},
+        )
+    except Exception as e:
+        console.print(f"[yellow]HTTP client unavailable: {e}[/yellow]")
 
     runner = AutonomousRunner(
         engagement=engagement,
@@ -66,12 +91,15 @@ async def _run_engagement(engagement, resume: bool = False):
             approval_level=ApprovalLevel.NONE,
         ),
         llm_generate=llm_generate,
+        http_client=http_client,
+        tool_registry=tool_registry,
     )
 
     console.print(f"\n[accent]{'Resuming' if resume else 'Starting'} autonomous research...[/accent]")
     console.print(f"  Target:   {engagement.target_url}")
     console.print(f"  Workspace: {runner.workspace_dir}\n")
 
+    result = None
     with console.status("[cyan]Researching…[/cyan]"):
         try:
             if resume:
@@ -94,20 +122,85 @@ async def _run_engagement(engagement, resume: bool = False):
             console.print(f"\n[red]Engagement failed: {redact_secrets(str(e))}[/red]")
             console.print("State saved. Resume with: demogorgon resume")
             return
+        finally:
+            if http_client is not None:
+                try:
+                    await http_client.aclose()
+                except Exception:
+                    pass
+
+    if result is None:
+        return
+
+    _render_engagement_result(result)
+
+
+# Terminal colours per run status (Phase 12)
+_STATUS_STYLE = {
+    "completed": "green",
+    "partial": "yellow",
+    "degraded": "yellow",
+    "blocked": "red",
+    "failed": "red",
+    "cancelled": "yellow",
+}
+
+
+def _render_engagement_result(result: dict) -> None:
+    """Print an honest result panel — status is never assumed 'Complete'."""
+    from demogorgon.config.provider_config import redact_secrets
+
+    status = str(result.get("status") or "unknown").lower()
+    style = _STATUS_STYLE.get(status, "white")
+    label = status.upper().replace("_", " ")
 
     if result.get("error"):
-        from demogorgon.config.provider_config import redact_secrets
-        console.print(f"\n[red]Engagement error: {redact_secrets(str(result['error']))}[/red]")
-    else:
-        console.print(Panel(
-            f"[green]Engagement Complete[/green]\n"
-            f"  Findings: {result.get('findings_count', 0)}\n"
-            f"  Chains:   {result.get('chains_count', 0)}\n"
-            f"  Duration: {result.get('duration', 0):.1f}s"
-            + (f"\n  Report:   {result['report_path']}" if result.get("report_path") else ""),
-            border_style="green",
-            title="Results",
-        ))
+        console.print(
+            f"\n[red]Engagement error: "
+            f"{redact_secrets(str(result['error']))}[/red]"
+        )
+
+    notes = result.get("status_notes") or []
+    notes_text = ""
+    if notes:
+        notes_text = "\n  Notes:\n" + "\n".join(f"    - {n}" for n in notes[:8])
+
+    recon = (result.get("stats") or {}).get("recon") or {}
+    recon_text = ""
+    if recon:
+        recon_text = (
+            f"\n  Recon: {recon.get('stages_completed', 0)}/"
+            f"{recon.get('stages_total', 0)} stages"
+        )
+        if recon.get("stages_skipped"):
+            recon_text += f" ({recon['stages_skipped']} skipped)"
+        errors = recon.get("stage_errors") or {}
+        if errors:
+            recon_text += f", {len(errors)} stage error(s)"
+
+    coverage = result.get("coverage") or {}
+    coverage_text = ""
+    if coverage:
+        coverage_text = (
+            f"\n  Coverage: {coverage.get('overall', 0):.0%} "
+            f"(grade {coverage.get('grade', '?')})"
+        )
+
+    border = "green" if status == "completed" else (
+        "red" if status in ("failed", "blocked") else "yellow"
+    )
+    console.print(Panel(
+        f"[{style}]{label}[/{style}]\n"
+        f"  Findings: {result.get('findings_count', 0)}\n"
+        f"  Chains:   {result.get('chains_count', 0)}\n"
+        f"  Duration: {result.get('duration', 0):.1f}s"
+        + recon_text
+        + coverage_text
+        + notes_text
+        + (f"\n  Report:   {result['report_path']}" if result.get("report_path") else ""),
+        border_style=border,
+        title="Results",
+    ))
 
 
 async def cmd_interactive():

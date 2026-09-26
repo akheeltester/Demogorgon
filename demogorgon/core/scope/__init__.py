@@ -11,12 +11,18 @@ Usage:
 """
 
 from .parser import parse_program_policy
+from .policy_parser import parse_policy, detect_platform
+from .validator import PolicyValidator, PolicyValidation
 from .normalizer import normalize_asset, normalize_assets
 from .matcher import ScopeMatcher, MatchResult
 from .safety import SafetyGate, SafetyCheck
 
 __all__ = [
     "parse_program_policy",
+    "parse_policy",
+    "detect_platform",
+    "PolicyValidator",
+    "PolicyValidation",
     "normalize_asset",
     "normalize_assets",
     "ScopeMatcher",

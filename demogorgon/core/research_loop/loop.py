@@ -89,6 +89,9 @@ class ResearchLoop:
         research_trace: Any = None,
         strategy_engine: Any = None,
         application_model: Any = None,
+        # Phase 11: cooperative cancellation (set → loop stops after current
+        # iteration, checkpoints, and returns a cancelled report)
+        cancel_event: Any = None,
     ):
         self.target = target
         self.config = config or LoopConfig()
@@ -143,6 +146,35 @@ class ResearchLoop:
         self._strategy = "explore"  # explore, validate, exploit
         self._tested_endpoints: set[str] = set()
 
+        # Phase 11: cooperative cancellation flag (asyncio.Event or any
+        # object exposing is_set())
+        self._cancel_event = cancel_event
+        self._cancelled = False
+
+    @property
+    def cancelled(self) -> bool:
+        """True when the loop stopped because cancellation was requested."""
+        return self._cancelled
+
+    def request_cancel(self) -> None:
+        """Request a graceful stop after the current iteration (Phase 11)."""
+        self._cancelled = True
+        if self._cancel_event is not None and hasattr(self._cancel_event, "set"):
+            self._cancel_event.set()
+
+    def _cancel_requested(self) -> bool:
+        if self._cancelled:
+            return True
+        ev = self._cancel_event
+        if ev is None:
+            return False
+        if hasattr(ev, "is_set"):
+            try:
+                return bool(ev.is_set())
+            except Exception:  # noqa: BLE001
+                return False
+        return bool(ev)
+
     async def initialize(self) -> None:
         """Initialize the loop."""
         await self.brain.initialize()
@@ -151,16 +183,25 @@ class ResearchLoop:
     async def run(self) -> dict[str, Any]:
         """Run the complete research loop."""
         start_time = time.time()
+        stop_reason = ""
 
         while True:
             # Check stopping conditions
             should_stop, reason = self._check_stopping_conditions()
             if should_stop:
+                stop_reason = reason
                 logger.info(f"Stopping: {reason}")
                 break
 
             # Run one iteration
             result = await self._iteration_cycle()
+
+            # The reasoner's "stop" decision is a terminal action. Ignoring it
+            # burned every remaining iteration on identical no-op cycles.
+            if isinstance(result, dict) and result.get("action") == "stop":
+                stop_reason = str(result.get("reason") or "reasoner requested stop")
+                logger.info(f"Stopping: {stop_reason}")
+                break
 
             # Periodic tasks
             if self._iteration % self.config.checkpoint_interval == 0:
@@ -169,9 +210,19 @@ class ResearchLoop:
             if self._iteration % self.config.self_eval_interval == 0:
                 self._self_evaluate()
 
+        # Phase 11: on cancellation always checkpoint so resume has the
+        # latest case state, then flag the report as cancelled.
+        if self._cancelled:
+            try:
+                self._save_checkpoint()
+            except Exception as e:  # noqa: BLE001 — cancel must still be clean
+                logger.warning(f"Checkpoint on cancel failed: {e}")
+
         # Generate final report
         report = self._generate_report()
         report["duration"] = time.time() - start_time
+        report["cancelled"] = self._cancelled
+        report["stop_reason"] = stop_reason
 
         return report
 
@@ -236,7 +287,13 @@ class ResearchLoop:
             if decision.action.value.startswith("test_"):
                 hypothesis = self.brain.add_hypothesis(
                     description=decision.reason,
-                    vuln_class=decision.action.value.replace("test_", ""),
+                    # Prefer the concrete class carried by the decision (the
+                    # deterministic reasoner puts it in params); falling back
+                    # to the action name yields useless values like "endpoint".
+                    vuln_class=str(
+                        (decision.params or {}).get("vuln_class")
+                        or decision.action.value.replace("test_", "")
+                    ),
                     endpoint=decision.target,
                 )
 
@@ -456,6 +513,11 @@ class ResearchLoop:
 
     def _check_stopping_conditions(self) -> tuple[bool, str]:
         """Check if the loop should stop."""
+        # Phase 11: cancellation wins over everything else
+        if self._cancel_requested():
+            self._cancelled = True
+            return True, "cancelled by user"
+
         if self._iteration >= self.config.max_iterations:
             return True, f"Max iterations ({self.config.max_iterations}) reached"
 
@@ -558,9 +620,50 @@ class ResearchLoop:
         )
 
     def _generate_report(self) -> dict[str, Any]:
-        """Generate a final report."""
+        """Generate a final report.
+
+        The loop tracks tested actions/endpoints in its own sets (the brain's
+        copies only update via ``brain.execute_experiment``, which this loop
+        does not call). Merge them so coverage/stats are truthful.
+        """
         stats = self.brain.get_stats()
         evidence_summary = self.evidence.get_summary()
+
+        stats["tested_endpoints"] = len(self._tested_endpoints)
+        stats["tested_actions"] = max(
+            stats.get("tested_actions", 0), len(self._tested_endpoints)
+        )
+        # An endpoint counts as "tested" once an experiment ran against it
+        stats["unique_endpoints"] = stats["tested_endpoints"]
+        if not stats.get("vuln_class_coverage"):
+            coverage: dict[str, int] = {}
+            # The hypothesis carries the real class; the action name often
+            # degrades to the useless "endpoint" (from test_endpoint).
+            hyp_class = {
+                h.id: (h.vuln_class or "").strip()
+                for h in self.brain.case.hypotheses
+            }
+            for exp in self.brain.case.experiments:
+                if not (exp.action or "").startswith("test_"):
+                    continue
+                vc = hyp_class.get(getattr(exp, "hypothesis_id", ""), "")
+                if not vc and isinstance(exp.plan, dict):
+                    vc = str(exp.plan.get("vuln_class") or "")
+                if not vc:
+                    vc = (exp.action or "").replace("test_", "", 1)
+                if vc and vc != "endpoint":
+                    coverage[vc] = coverage.get(vc, 0) + 1
+            # A confirmed finding proves its class was exercised, even when the
+            # action that found it was a generic probe (test_endpoint).
+            for finding in self.brain.case.get_confirmed_findings():
+                vc = (finding.vuln_class or "").strip()
+                if vc and vc != "endpoint":
+                    coverage[vc] = coverage.get(vc, 0) + 1
+            stats["vuln_class_coverage"] = coverage
+        stats["vuln_classes_tested"] = len(stats["vuln_class_coverage"])
+        stats["vuln_classes_untested"] = max(
+            0, 14 - stats["vuln_classes_tested"]
+        )
 
         return {
             "target": self.target,

@@ -72,9 +72,26 @@ class ResearchBrain:
         self._application_model = application_model
 
         # Initialize components
-        self.reasoner = LLMReasoner(llm_generate)
-        self.planner = LLMExperimentPlanner(llm_generate)
-        self.validator = LLMValidator(llm_generate)
+        # Phase 6: with no LLM provider the brain must fall back to the
+        # deterministic backbone instead of crashing on `None(...)`.
+        self._deterministic = llm_generate is None
+        if llm_generate is None:
+            from ..research_loop.deterministic import (
+                DeterministicPlanner,
+                DeterministicReasoner,
+                DeterministicValidator,
+            )
+            self.reasoner = DeterministicReasoner(target=target)
+            self.planner = DeterministicPlanner()
+            self.validator = DeterministicValidator()
+            logger.info(
+                "No LLM provider — using deterministic research backbone "
+                "(safe-GET playbook)"
+            )
+        else:
+            self.reasoner = LLMReasoner(llm_generate)
+            self.planner = LLMExperimentPlanner(llm_generate)
+            self.validator = LLMValidator(llm_generate)
         self._llm = llm_generate
 
         # Initialize case

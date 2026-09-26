@@ -20,9 +20,17 @@ import uuid
 class EngagementStatus(Enum):
     """Status of an engagement."""
     CREATED = "created"
+    INITIALIZING = "initializing"
+    RECON = "recon"
+    RESEARCHING = "researching"
     ACTIVE = "active"
     PAUSED = "paused"  # HITL or manual pause
+    DEGRADED = "degraded"    # ran, but a capability was unavailable
+    BLOCKED = "blocked"      # could not research (no usable engine / out of scope)
+    PARTIAL = "partial"      # interrupted, partial results persisted
     COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
     ABANDONED = "abandoned"
 
 
@@ -43,12 +51,25 @@ class AuthorizationStatus(Enum):
 
 @dataclass
 class ScopeAsset:
-    """A single asset in scope."""
+    """A single asset in scope, with parse provenance (Phase 2 AST)."""
     pattern: str  # e.g., "*.example.com", "192.168.1.0/24", "https://app.example.com"
     asset_type: str = "domain"  # domain, subdomain, ip_range, url, mobile_app, api
     description: str = ""
     in_scope: bool = True
     source: str = ""  # where this came from (program policy, user input, etc.)
+
+    # ── AST provenance (all optional — legacy code keeps working) ──
+    canonical_pattern: str = ""        # normalized form used for matching
+    source_section: str = ""           # "in_scope", "out_of_scope", "prose", …
+    source_text: str = ""              # the raw line this asset came from
+    inclusion_state: str = ""          # InclusionState.value ("" = derived from in_scope)
+    confidence: float = 1.0            # < EXPLICIT_CONFIDENCE ⇒ not auto-authorized
+
+    @property
+    def is_explicit(self) -> bool:
+        """Whether this asset is explicitly authorized (high-confidence in-scope)."""
+        state = self.inclusion_state or ("in_scope" if self.in_scope else "out_of_scope")
+        return state == "in_scope" and self.confidence >= 0.85
 
     def to_dict(self) -> dict:
         return {
@@ -57,11 +78,17 @@ class ScopeAsset:
             "description": self.description,
             "in_scope": self.in_scope,
             "source": self.source,
+            "canonical_pattern": self.canonical_pattern,
+            "source_section": self.source_section,
+            "source_text": self.source_text,
+            "inclusion_state": self.inclusion_state,
+            "confidence": self.confidence,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> ScopeAsset:
-        return cls(**data)
+        known = {f for f in cls.__dataclass_fields__}
+        return cls(**{k: v for k, v in data.items() if k in known})
 
 
 @dataclass
@@ -72,6 +99,7 @@ class TestingRestriction:
     description: str = ""
     rate_limit: float | None = None  # requests per second, if applicable
     max_requests: int | None = None  # absolute limit, if applicable
+    source_section: str = ""  # where in the policy this came from
 
     def to_dict(self) -> dict:
         return {
@@ -80,6 +108,7 @@ class TestingRestriction:
             "description": self.description,
             "rate_limit": self.rate_limit,
             "max_requests": self.max_requests,
+            "source_section": self.source_section,
         }
 
 
@@ -114,11 +143,30 @@ class ProgramPolicy:
     
     # Raw policy
     raw_policy: str = ""
-    
+
+    # ── AST additions (Phase 2) — all optional, default empty ──
+    # Structured rules. When empty, legacy in_scope/out_of_scope lists apply.
+    scope_rules: list = field(default_factory=list)          # list[ScopeRule]
+    exclusion_rules: list = field(default_factory=list)      # list[ExclusionRule]
+    testing_constraints: list = field(default_factory=list)  # list[TestingConstraint]
+    evidence_requirements: list = field(default_factory=list)  # list[EvidenceRequirement]
+    required_headers: list = field(default_factory=list)     # list[RequiredHeader]
+    known_issues: list = field(default_factory=list)         # list[KnownIssue]
+    allowed_vuln_rules: list = field(default_factory=list)   # list[AllowedVulnerability]
+    forbidden_vuln_rules: list = field(default_factory=list) # list[ForbiddenVulnerability]
+    account_constraint: Any = None                            # AccountConstraint | None
+    safe_harbor_rule: Any = None                              # SafeHarbor | None
+    parse_metadata: Any = None                                # PolicyMetadata | None
+    #: True when the policy came from target-only mode (no program document)
+    target_only: bool = False
+
     # Metadata
     parsed_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> dict:
+        def _ser(items):
+            return [i.to_dict() if hasattr(i, "to_dict") else str(i) for i in items]
+
         return {
             "program_name": self.program_name,
             "organization": self.organization,
@@ -134,10 +182,43 @@ class ProgramPolicy:
             "safe_harbor": self.safe_harbor,
             "reward_info": self.reward_info,
             "parsed_at": self.parsed_at,
+            "target_only": self.target_only,
+            "scope_rules": _ser(self.scope_rules),
+            "exclusion_rules": _ser(self.exclusion_rules),
+            "testing_constraints": _ser(self.testing_constraints),
+            "evidence_requirements": _ser(self.evidence_requirements),
+            "required_headers": _ser(self.required_headers),
+            "known_issues": _ser(self.known_issues),
+            "allowed_vuln_rules": _ser(self.allowed_vuln_rules),
+            "forbidden_vuln_rules": _ser(self.forbidden_vuln_rules),
+            "account_constraint": (
+                self.account_constraint.to_dict() if self.account_constraint else None
+            ),
+            "safe_harbor_rule": (
+                self.safe_harbor_rule.to_dict() if self.safe_harbor_rule else None
+            ),
+            "parse_metadata": (
+                self.parse_metadata.to_dict() if self.parse_metadata else None
+            ),
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> ProgramPolicy:
+        from ..scope.policy_ast import (
+            AccountConstraint,
+            AllowedVulnerability,
+            EvidenceRequirement,
+            ExclusionRule,
+            ForbiddenVulnerability,
+            InclusionState,
+            KnownIssue,
+            PolicyMetadata,
+            RequiredHeader,
+            SafeHarbor,
+            ScopeRule,
+            TestingConstraint,
+        )
+
         policy = cls(
             program_name=data.get("program_name", ""),
             organization=data.get("organization", ""),
@@ -150,13 +231,59 @@ class ProgramPolicy:
             safe_harbor=data.get("safe_harbor", False),
             reward_info=data.get("reward_info", ""),
             parsed_at=data.get("parsed_at", ""),
+            target_only=data.get("target_only", False),
         )
         for a in data.get("in_scope", []):
             policy.in_scope.append(ScopeAsset.from_dict(a))
         for a in data.get("out_of_scope", []):
             policy.out_of_scope.append(ScopeAsset.from_dict(a))
         for r in data.get("restrictions", []):
-            policy.restrictions.append(TestingRestriction(**r))
+            known = {f for f in TestingRestriction.__dataclass_fields__}
+            policy.restrictions.append(
+                TestingRestriction(**{k: v for k, v in r.items() if k in known})
+            )
+
+        def _load_rules(items, cls_):
+            out = []
+            for item in items or []:
+                if not isinstance(item, dict):
+                    continue
+                known = {f for f in cls_.__dataclass_fields__}
+                kwargs = {k: v for k, v in item.items() if k in known}
+                if "inclusion_state" in kwargs and isinstance(kwargs["inclusion_state"], str):
+                    try:
+                        kwargs["inclusion_state"] = InclusionState(kwargs["inclusion_state"])
+                    except ValueError:
+                        kwargs["inclusion_state"] = InclusionState.IN_SCOPE
+                out.append(cls_(**kwargs))
+            return out
+
+        policy.scope_rules = _load_rules(data.get("scope_rules"), ScopeRule)
+        policy.exclusion_rules = _load_rules(data.get("exclusion_rules"), ExclusionRule)
+        policy.testing_constraints = _load_rules(data.get("testing_constraints"), TestingConstraint)
+        policy.evidence_requirements = _load_rules(
+            data.get("evidence_requirements"), EvidenceRequirement
+        )
+        policy.required_headers = _load_rules(data.get("required_headers"), RequiredHeader)
+        policy.known_issues = _load_rules(data.get("known_issues"), KnownIssue)
+        policy.allowed_vuln_rules = _load_rules(
+            data.get("allowed_vuln_rules"), AllowedVulnerability
+        )
+        policy.forbidden_vuln_rules = _load_rules(
+            data.get("forbidden_vuln_rules"), ForbiddenVulnerability
+        )
+        if data.get("account_constraint"):
+            known = {f for f in AccountConstraint.__dataclass_fields__}
+            policy.account_constraint = AccountConstraint(
+                **{k: v for k, v in data["account_constraint"].items() if k in known}
+            )
+        if data.get("safe_harbor_rule"):
+            known = {f for f in SafeHarbor.__dataclass_fields__}
+            policy.safe_harbor_rule = SafeHarbor(
+                **{k: v for k, v in data["safe_harbor_rule"].items() if k in known}
+            )
+        if data.get("parse_metadata"):
+            policy.parse_metadata = PolicyMetadata.from_dict(data["parse_metadata"])
         return policy
 
 

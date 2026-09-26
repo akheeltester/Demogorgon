@@ -180,10 +180,13 @@ class LLMValidator(Validator):
         result.setdefault("cvss_estimate", "")
         result.setdefault("steps_to_reproduce", [])
 
-        # Add metadata
-        result["vuln_class"] = evidence.get("vuln_class", "unknown")
-        result["endpoint"] = evidence.get("endpoint", "unknown")
-        result["method"] = evidence.get("method", "GET")
+        # Metadata: the validator's own classification wins. Unconditionally
+        # overwriting it with the evidence's class (often just "endpoint"
+        # from `test_endpoint`) discarded the LLM's answer entirely.
+        if not str(result.get("vuln_class") or "").strip():
+            result["vuln_class"] = evidence.get("vuln_class", "unknown")
+        result["endpoint"] = result.get("endpoint") or evidence.get("endpoint", "unknown")
+        result["method"] = result.get("method") or evidence.get("method", "GET")
 
         return result
 

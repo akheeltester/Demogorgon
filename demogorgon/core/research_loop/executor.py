@@ -110,11 +110,22 @@ class PlanExecutor(ExperimentExecutor):
             "duration": time.time() - start_time,
         }
 
+    #: HTTP verbs commonly emitted as a step "action" by LLM planners. They
+    #: mean "send this request", so map them onto send_request instead of
+    #: dropping the step with "Unknown action".
+    _HTTP_VERBS = {"get", "post", "put", "delete", "patch", "head", "options"}
+
     async def _execute_step(self, step: dict[str, Any]) -> dict[str, Any]:
         """Execute a single step."""
         action = step.get("action", "send_request")
         target = step.get("target", "")
         method = step.get("method", "GET")
+
+        if isinstance(action, str):
+            lowered = action.lower()
+            if lowered in self._HTTP_VERBS:
+                step = {**step, "method": action.upper(), "action": "send_request"}
+                action, method = "send_request", action.upper()
 
         if action == "send_request":
             return await self._execute_http_request(target, method, step)

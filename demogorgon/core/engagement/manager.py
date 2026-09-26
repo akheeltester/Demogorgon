@@ -81,6 +81,38 @@ class EngagementManager:
 
         return engagement
 
+    def create_from_parsed_policy(
+        self,
+        policy: ProgramPolicy,
+        raw_text: str,
+        user: str = "",
+        name: str = "",
+    ) -> Engagement:
+        """Create an engagement from an already-parsed policy + raw text.
+
+        Raw policy text and parsed policy stay separate: the raw text is
+        saved verbatim, the parsed policy object is used for enforcement.
+        """
+        engagement = Engagement(
+            name=name or policy.program_name,
+            organization=policy.organization,
+            authorization_source=AuthorizationSource.BUG_BOUNTY_PROGRAM,
+            authorization_status=AuthorizationStatus.PENDING_CONFIRMATION,
+            policy=policy,
+            status=EngagementStatus.CREATED,
+        )
+
+        workspace = self._create_workspace(engagement)
+        engagement.workspace_dir = str(workspace)
+
+        (workspace / "program").mkdir(exist_ok=True)
+        (workspace / "program" / "raw_policy.txt").write_text(raw_text)
+        (workspace / "program" / "policy.json").write_text(
+            json.dumps(policy.to_dict(), indent=2)
+        )
+        engagement.save(str(workspace / "engagement.json"))
+        return engagement
+
     def create_from_url(
         self,
         url: str,
@@ -114,7 +146,11 @@ class EngagementManager:
                     asset_type="url",
                     description=f"User-provided target: {url}",
                     source="user_input",
+                    source_section="target_only",
+                    inclusion_state="in_scope",
+                    confidence=1.0,
                 )],
+                target_only=True,
             ),
         )
 

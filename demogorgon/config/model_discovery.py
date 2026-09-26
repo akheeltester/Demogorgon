@@ -161,9 +161,14 @@ async def test_provider_connection(
     api_key: str = "",
     base_url: str = "",
 ) -> dict[str, Any]:
-    """Test if a provider is reachable and authenticated.
+    """Test if a provider is reachable, authenticated, and serves a real request.
 
-    Returns: {"success": bool, "error": str|None, "latency_ms": float|None, "model": str|None}
+    Phase 6 fix: previously ``health_check()`` always returned a truthy dict
+    (so ``if not latency`` never fired) and the smoke-test result was ignored —
+    ``success`` was hardcoded True even when inference failed (e.g. missing
+    google-genai dependency).  Now BOTH must pass.
+
+    Returns: {"success": bool, "error": str|None, "latency_ms": float|None, ...}
     """
     try:
         from ..llm.manager import LLMManager
@@ -171,18 +176,50 @@ async def test_provider_connection(
         manager = LLMManager()
         manager.configure_from_params(provider=provider, api_key=api_key, base_url=base_url or None)
 
-        # Health check
-        latency = await manager.health_check()
-        if not latency:
-            return {"success": False, "error": "Provider not reachable", "latency_ms": None, "model": None}
+        # 1. Health check — must report status "healthy"
+        health = await manager.health_check()
+        if not isinstance(health, dict) or health.get("status") != "healthy":
+            detail = (
+                health.get("connectivity")
+                if isinstance(health, dict) else "Provider not reachable"
+            )
+            return {
+                "success": False,
+                "error": f"Provider not reachable ({detail})",
+                "latency_ms": None,
+                "model": None,
+            }
 
-        # Smoke test
+        # 2. Smoke test — a real inference call must succeed with structured output
         smoke = await manager.smoke_test()
+        if smoke.get("status") != "ok":
+            from .provider_config import redact_secrets
+
+            return {
+                "success": False,
+                "error": redact_secrets(
+                    smoke.get("error") or "Smoke test failed — inference unavailable"
+                ),
+                "latency_ms": None,
+                "model": manager._active_model,
+            }
+        if smoke.get("structured_output") == "FAILED":
+            from .provider_config import redact_secrets
+
+            return {
+                "success": False,
+                "error": redact_secrets(
+                    "Model responded but did not return valid JSON — "
+                    f"raw: {smoke.get('raw_response', '')[:120]}"
+                ),
+                "latency_ms": smoke.get("latency"),
+                "model": manager._active_model,
+            }
 
         return {
             "success": True,
             "error": None,
-            "latency_ms": latency,
+            "latency_ms": smoke.get("latency"),
             "model": manager._active_model,
             "structured_output": smoke,
         }

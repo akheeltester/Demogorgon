@@ -112,6 +112,13 @@ class ValidationPipeline:
         fp_reasons: list[str] = []
         tp_indicators: list[str] = []
 
+        # Phase 13 fix: EvidenceCollector.package_for_validation() emits
+        # {"evidence": [...], "request_response": {...}} but the gates read
+        # {"raw_evidence": [...], "request_response_pairs": [...]}. Without
+        # this normalization EVERY real finding failed the sanity gate and
+        # was reported as a false positive.
+        evidence = self._normalize_evidence(evidence)
+
         # 1. Sanity gate
         if ValidationGate.SANITY not in self._skip_gates:
             result = self._check_sanity(evidence)
@@ -385,13 +392,39 @@ class ValidationPipeline:
         fp_reasons: list[str],
         tp_indicators: list[str],
     ) -> dict[str, Any]:
-        """Build a validation result dict."""
+        """Build a validation result dict.
+
+        ``is_false_positive`` is only True when there are actual FP signals —
+        a gate that merely *failed* (e.g. insufficient evidence) means
+        "not proven", not "proven false".  The research loop treats
+        is_false_positive as "reject and stop", so conflating the two
+        silently killed legitimate findings (Phase 13).
+        """
         return {
             "is_valid": is_valid,
             "final_confidence": confidence,
             "gates": [r.to_dict() for r in gates],
-            "is_false_positive": not is_valid,
+            "is_false_positive": bool(fp_reasons),
             "fp_reasons": fp_reasons,
             "tp_indicators": tp_indicators,
             "recommended_severity": "informational" if not is_valid else "low",
         }
+
+    @staticmethod
+    def _normalize_evidence(evidence: dict[str, Any]) -> dict[str, Any]:
+        """Map EvidenceCollector's schema onto the gates' expected schema."""
+        if not isinstance(evidence, dict):
+            return evidence
+        normalized = dict(evidence)
+
+        if "raw_evidence" not in normalized:
+            items = normalized.get("evidence") or []
+            if isinstance(items, list):
+                normalized["raw_evidence"] = items
+
+        if "request_response_pairs" not in normalized:
+            pair = normalized.get("request_response") or {}
+            if pair:
+                normalized["request_response_pairs"] = [pair]
+
+        return normalized

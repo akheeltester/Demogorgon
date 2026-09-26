@@ -133,6 +133,32 @@ class LLMExperimentPlanner(ExperimentPlanner):
         plan["hypothesis_id"] = hypothesis.get("id", "")
         plan["hypothesis_description"] = hypothesis.get("description", "")
 
+        # Resolve step targets. LLMs routinely echo the "{endpoint}"
+        # placeholder from the prompt or omit target entirely, which would
+        # otherwise send the executor to a literal "{endpoint}" URL.
+        endpoint = hypothesis.get("endpoint", "")
+        resolved: list[dict[str, Any]] = []
+        for step in plan["steps"]:
+            if not isinstance(step, dict):
+                continue
+            target = str(step.get("target", "") or "")
+            if not target or "{endpoint}" in target or "{url}" in target:
+                for placeholder in ("{endpoint}", "{url}"):
+                    target = target.replace(placeholder, endpoint)
+                step = {**step, "target": target or endpoint}
+            resolved.append(step)
+        if resolved:
+            plan["steps"] = resolved
+        elif endpoint:
+            # A plan with no usable steps produces no evidence at all.
+            plan["steps"] = [{
+                "step": 1,
+                "action": "send_request",
+                "target": endpoint,
+                "method": "GET",
+                "expected": "Observe response for vulnerability indicators",
+            }]
+
         # Ensure safety checks exist
         if not plan["safety_checks"]:
             plan["safety_checks"] = [

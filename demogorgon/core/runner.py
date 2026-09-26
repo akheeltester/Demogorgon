@@ -97,6 +97,16 @@ class AutonomousRunner:
         self._strategy_engine = strategy_engine
         self._application_model = application_model
 
+        # Phase 9: honest status tracking
+        self._capability_notes: list[str] = []
+        self._cancelled = False
+        self._tool_executor: Any = None
+        # Phase 11: cooperative cancellation — runner.cancel() stops the
+        # research loop after the current iteration, saves a checkpoint and
+        # marks the run cancelled (resumable).
+        self._cancel_event: asyncio.Event = asyncio.Event()
+        self._cancel_requested = False
+
         if not self.workspace_dir:
             self.workspace_dir = os.path.join(
                 os.getcwd(), "engagements", engagement.id
@@ -169,65 +179,207 @@ class AutonomousRunner:
     async def run(self) -> dict[str, Any]:
         """Run the complete autonomous engagement.
 
-        Returns a summary dict with findings, stats, and report path.
+        Returns a summary dict with findings, stats, report path, and an
+        honest ``status``: completed | degraded | partial | failed | blocked
+        | cancelled — never a blanket "completed".
+
+        Phase 9/16: exceptions are captured into the summary instead of
+        being swallowed; CancellationError marks the run cancelled.
         """
         start_time = time.time()
         logger.info(f"Starting autonomous engagement: {self.engagement.id}")
         logger.info(f"Target: {self.engagement.target_url}")
 
-        # 1. Persist initial state
-        state = self.state_manager.initialize(
-            engagement_id=self.engagement.id,
-            target=self.engagement.target_url,
-        )
+        # Fresh run (or resume) → clear any stale cancel flag from a
+        # previous cancellation of this same runner instance.
+        self._cancelled = False
+        self._cancel_requested = False
+        try:
+            self._cancel_event.clear()
+        except RuntimeError:
+            pass
+        self._capability_notes = []
 
-        # 2. Check authorization
-        if self.engagement.authorization_status != AuthorizationStatus.CONFIRMED:
-            logger.warning("Authorization not confirmed — pausing for confirmation")
-            self.pause_controller.pause(
-                PauseReason.HUMAN_REQUEST,
-                "Authorization not confirmed. Please confirm before active testing.",
-            )
-            await self.pause_controller.wait_for_resume()
-
-        # 3. Discover tools
-        tools_available = await self._discover_tools()
-        state.data["tools_discovered"] = tools_available
-        self.state_manager.save_state(state)
-
-        # 4. Execute recon (if not already done)
-        recon_results = await self._run_recon(state)
-        state.data["recon_complete"] = True
-        self.state_manager.save_state(state)
-
-        # 5. Crawl application
-        crawl_results = await self._run_crawl(state, recon_results)
-        state.data["crawl_complete"] = True
-        self.state_manager.save_state(state)
-
-        # 6. Run research loop
-        research_report = await self._run_research(state)
-
-        # 7. Detect attack chains
-        chains = self._detect_chains(research_report)
-
-        # 8. Generate report
+        state = None
+        recon_results: dict[str, Any] | None = None
+        crawl_results: dict[str, Any] | None = None
+        research_report: dict[str, Any] = {"iterations": 0, "findings": []}
+        chains: list = []
         report_path = ""
-        if self.config.auto_report:
-            report_path = self._generate_report(research_report, chains)
+        tools_available = 0
+        failure: str | None = None
+        diagnostics: Any = None
+        run_status = "completed"
 
-        # 9. Final state
-        state.status = "completed"
-        state.findings_count = len(research_report.get("findings", []))
-        state.evidence_count = research_report.get("evidence", {}).get("total_items", 0)
-        self.state_manager.save_state(state)
+        try:
+            # 1. Persist initial state
+            state = self.state_manager.initialize(
+                engagement_id=self.engagement.id,
+                target=self.engagement.target_url,
+            )
+            state.status = "initializing"
+            self.state_manager.save_state(state)
 
-        duration = time.time() - start_time
+            # 2. Check authorization
+            if self.engagement.authorization_status != AuthorizationStatus.CONFIRMED:
+                logger.warning("Authorization not confirmed — pausing for confirmation")
+                self.pause_controller.pause(
+                    PauseReason.HUMAN_REQUEST,
+                    "Authorization not confirmed. Please confirm before active testing.",
+                )
+                await self.pause_controller.wait_for_resume()
 
+            # 3. Discover tools first so the capability probe sees the registry
+            tools_available = await self._discover_tools()
+            state.data["tools_discovered"] = tools_available
+
+            # 2b. Environment capability probe (Phase 4) — decides degraded/blocked
+            diagnostics = self._probe_capabilities()
+
+            state.status = "recon"
+            self.state_manager.save_state(state)
+
+            # 4. Execute recon (if not already done)
+            recon_results = await self._run_recon(state)
+            state.data["recon_complete"] = True
+            self.state_manager.save_state(state)
+
+            # 5. Crawl application
+            crawl_results = await self._run_crawl(state, recon_results)
+            state.data["crawl_complete"] = True
+            self.state_manager.save_state(state)
+
+            # 6. Run research loop
+            state.status = "researching"
+            self.state_manager.save_state(state)
+            research_report = await self._run_research(state)
+            if research_report.get("error") and not research_report.get("findings"):
+                failure = str(research_report["error"])
+            if research_report.get("cancelled") or self._cancelled:
+                # Phase 11: graceful cancel — stop the pipeline here, keep
+                # whatever we have, save state for resume.
+                run_status = "cancelled"
+                self._cancelled = True
+                logger.warning(
+                    "Engagement cancelled — saving state for resume"
+                )
+                self._cancel_event.set()
+                chains = self._detect_chains(research_report)
+                if self.config.auto_report:
+                    try:
+                        report_path = self._generate_report(research_report, chains)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"Report on cancel failed: {e}")
+                duration = time.time() - start_time
+                if state is not None:
+                    state.status = "cancelled"
+                    state.findings_count = len(research_report.get("findings", []))
+                    try:
+                        self.state_manager.save_state(state)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(f"Could not persist cancelled state: {e}")
+                summary = self._build_summary(
+                    run_status, research_report, chains, report_path,
+                    tools_available, recon_results, crawl_results,
+                    duration, failure,
+                )
+                summary["resume_hint"] = "demogorgon resume"
+                logger.warning(
+                    f"Engagement cancelled: {summary['findings_count']} findings "
+                    f"preserved after {duration:.1f}s"
+                )
+                return summary
+
+            # 7. Detect attack chains
+            chains = self._detect_chains(research_report)
+
+            # 8. Generate report
+            if self.config.auto_report:
+                report_path = self._generate_report(research_report, chains)
+
+        except asyncio.CancelledError:
+            self._cancelled = True
+            run_status = "cancelled"
+            logger.warning("Engagement cancelled — state saved for resume")
+            raise
+        except Exception as e:
+            failure = str(e)
+            run_status = "failed"
+            logger.exception(f"Engagement failed: {e}")
+        finally:
+            # 9. Final state — derive status honestly, never blanket "completed"
+            duration = time.time() - start_time
+            if state is not None:
+                if run_status == "cancelled":
+                    state.status = "cancelled"
+                elif run_status == "failed":
+                    state.status = "failed"
+                else:
+                    run_status = self._derive_status(
+                        run_status, research_report, failure, diagnostics
+                    )
+                    state.status = run_status
+                state.findings_count = len(research_report.get("findings", []))
+                state.evidence_count = research_report.get("evidence", {}).get("total_items", 0)
+                try:
+                    self.state_manager.save_state(state)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"Could not persist final state: {e}")
+
+            summary = self._build_summary(
+                run_status, research_report, chains, report_path,
+                tools_available, recon_results, crawl_results,
+                duration, failure,
+            )
+
+            if run_status == "cancelled":
+                summary["resume_hint"] = "demogorgon resume"
+
+        logger.info(
+            f"Engagement {run_status}: {summary['findings_count']} findings, "
+            f"{summary['chains_count']} chains in {duration:.1f}s"
+            + (f" — {failure}" if failure else "")
+        )
+        return summary
+
+    @staticmethod
+    def _dedupe_notes(notes: list[str]) -> list[str]:
+        """Collapse notes that describe the same capability.
+
+        The probe records "recon: unavailable" and the stage runner then adds
+        "recon: unavailable (<reason>)". Keep the most specific (longest) note
+        per capability prefix so users see one line, not two.
+        """
+        best: dict[str, str] = {}
+        order: list[str] = []
+        for note in notes:
+            key = note.split(":", 1)[0].strip() if ":" in note else note
+            if key not in best:
+                best[key] = note
+                order.append(key)
+            elif len(note) > len(best[key]):
+                best[key] = note
+        return [best[k] for k in order]
+
+    def _build_summary(
+        self,
+        run_status: str,
+        research_report: dict[str, Any],
+        chains: list,
+        report_path: str,
+        tools_available: int,
+        recon_results: dict[str, Any] | None,
+        crawl_results: dict[str, Any] | None,
+        duration: float,
+        failure: str | None,
+    ) -> dict[str, Any]:
+        """Assemble the run summary + coverage (Phase 9/10)."""
         summary = {
             "engagement_id": self.engagement.id,
             "target": self.engagement.target_url,
-            "status": "completed",
+            "status": run_status,
+            "status_notes": self._dedupe_notes(self._capability_notes),
+            "error": failure,
             "duration": duration,
             "iterations": research_report.get("iterations", 0),
             "findings": research_report.get("findings", []),
@@ -238,14 +390,118 @@ class AutonomousRunner:
             "stats": {
                 "tools_discovered": tools_available,
                 "recon": recon_results.get("stats", {}) if recon_results else {},
+                "crawl": crawl_results or {},
                 "research": research_report.get("stats", {}),
             },
         }
 
-        logger.info(f"Engagement complete: {summary['findings_count']} findings, "
-                     f"{summary['chains_count']} chains in {duration:.1f}s")
+        # Phase 10: canonical result object + honest coverage metrics
+        try:
+            from .hunt_result import HuntResult
+            scope_assets = (
+                self.engagement.policy.in_scope
+                if self.engagement.policy else []
+            )
+            hunt = HuntResult.from_summary(
+                summary,
+                scope_assets=scope_assets,
+                llm_used=bool(self.llm_generate),
+            )
+            summary["coverage"] = hunt.coverage.to_dict()
+            summary["coverage_summary"] = hunt.coverage.describe()
+        except Exception as e:  # noqa: BLE001 — coverage must never kill a run
+            logger.debug(f"Coverage computation failed: {e}")
 
         return summary
+
+    def _probe_capabilities(self) -> Any:
+        """Probe environment capabilities and record notes for the summary."""
+        try:
+            from .capabilities import build_environment_registry
+
+            registry = build_environment_registry(
+                llm_generate=self.llm_generate,
+                tool_registry=self.tool_registry,
+                target=self.engagement.target_url,
+            )
+            diag = registry.probe_all()
+            if diag.missing_required:
+                self._capability_notes.append(
+                    "missing required capability: " + ", ".join(diag.missing_required)
+                )
+            for name in diag.unavailable:
+                self._capability_notes.append(f"{name}: unavailable")
+            for name in diag.degraded:
+                self._capability_notes.append(f"{name}: degraded")
+            self._capability_diag = diag
+            return diag
+        except Exception as e:  # noqa: BLE001 — diagnostics must never kill a run
+            logger.debug(f"Capability probe failed: {e}")
+            self._capability_notes.append(f"capability probe failed: {e}")
+            return None
+
+    def _derive_status(
+        self,
+        current: str,
+        research_report: dict[str, Any],
+        failure: str | None,
+        diagnostics: Any,
+    ) -> str:
+        """Derive the honest terminal status for this run (Phase 9).
+
+        Rules (agreed spec):
+        - exception → failed (handled by caller)
+        - cancelled  → cancelled (handled by caller)
+        - no research engine could run (no LLM AND deterministic backbone
+          unavailable) → blocked
+        - research errored without findings → failed
+        - capability unavailable/degraded notes present → degraded
+        - research stopped early / partial results → partial
+        - else → completed
+        """
+        no_llm = not self.llm_generate
+        # "blocked" = neither engine could run. Use the capability probe
+        # (authoritative) and only fall back to notes when there is no diag.
+        det_missing = False
+        if diagnostics is not None:
+            det_missing = any(
+                "deterministic" in n for n in getattr(diagnostics, "missing_required", [])
+            ) or any(
+                n == "deterministic_research"
+                for n in getattr(diagnostics, "unavailable", [])
+            )
+        else:
+            # No probe available — interpret notes conservatively: only a
+            # note that is *about* the deterministic engine being absent
+            # counts (e.g. "llm: unavailable (deterministic backbone
+            # running)" must NOT be mistaken for a missing backbone).
+            det_missing = any(
+                (n.startswith("deterministic") or "missing required capability" in n)
+                and ("unavailable" in n or "missing" in n)
+                for n in self._capability_notes
+            )
+        if no_llm and det_missing:
+            # neither LLM nor deterministic backbone could run
+            return "blocked"
+
+        if failure:
+            # research loop hard-failed with no output
+            if not research_report.get("findings") and research_report.get("error"):
+                return "failed"
+
+        if research_report.get("partial"):
+            return "partial"
+
+        if self._capability_notes:
+            # ran, but something was degraded (recon failures, no LLM, …)
+            if no_llm or any("failed" in n or "degraded" in n or "unavailable" in n
+                             for n in self._capability_notes):
+                return "degraded"
+
+        if research_report.get("error") and not research_report.get("findings"):
+            return "failed"
+
+        return current
 
     async def resume(self) -> dict[str, Any]:
         """Resume a previously paused/interrupted engagement."""
@@ -260,16 +516,30 @@ class AutonomousRunner:
         return await self.run()
 
     async def _discover_tools(self) -> int:
-        """Discover available security tools."""
+        """Discover available security tools (Phase 5: real registry, awaited)."""
         if not self.tool_registry:
-            logger.info("No tool registry — skipping tool discovery")
-            return 0
+            # Build the default registry — CLI never passed one (root cause of
+            # "0 recon stages silently skipped").
+            try:
+                from ..tools.registry import create_default_registry
+                self.tool_registry = create_default_registry()
+                self.context.tool_registry = self.tool_registry
+            except Exception as e:
+                logger.warning(f"Could not build tool registry: {e}")
+                return 0
 
         try:
             if hasattr(self.tool_registry, 'discover_all'):
-                self.tool_registry.discover_all()
-            available = self.tool_registry.get_available_tools() if hasattr(self.tool_registry, 'get_available_tools') else []
-            self.context.available_tools = [t.name if hasattr(t, 'name') else str(t) for t in available]
+                result = self.tool_registry.discover_all()
+                if asyncio.iscoroutine(result):
+                    await result
+            available = (
+                self.tool_registry.get_available_tools()
+                if hasattr(self.tool_registry, 'get_available_tools') else []
+            )
+            self.context.available_tools = [
+                t.name if hasattr(t, 'name') else str(t) for t in available
+            ]
             logger.info(f"Discovered {len(self.context.available_tools)} tools")
             return len(self.context.available_tools)
         except Exception as e:
@@ -277,7 +547,12 @@ class AutonomousRunner:
             return 0
 
     async def _run_recon(self, state: EngagementState) -> dict[str, Any] | None:
-        """Execute reconnaissance phase."""
+        """Execute reconnaissance phase (Phase 5: correct registry/executor).
+
+        ReconEngine takes (registry, executor) — the executor must be a
+        ToolExecutor wrapping the registry, not the registry itself.
+        Stage failures are surfaced in the returned stats, never swallowed.
+        """
         if state.data.get("recon_complete"):
             logger.info("Recon already complete — skipping")
             return None
@@ -286,11 +561,33 @@ class AutonomousRunner:
 
         try:
             from ..recon.engine import ReconEngine
+        except ImportError as e:
+            logger.warning(f"ReconEngine not available — skipping recon: {e}")
+            self._capability_notes.append(f"recon: unavailable ({e})")
+            return None
+
+        if self.tool_registry is None:
+            logger.warning("No tool registry — recon skipped")
+            self._capability_notes.append("recon: no tool registry")
+            return None
+
+        try:
+            from ..tools.executor import ToolExecutor
+
+            executor = getattr(self, "_tool_executor", None)
+            if executor is None:
+                executor = ToolExecutor(self.tool_registry)
+                self._tool_executor = executor
+
             engine = ReconEngine(
                 registry=self.tool_registry,
-                executor=self.tool_registry,
+                executor=executor,
+                scope_matcher=self.scope_matcher,
             )
             result = await engine.run(self.engagement.target_url)
+            stage_errors = {
+                s.name: s.error for s in engine._stages if s.error
+            }
             stats = {
                 "subdomains": len(result.subdomains),
                 "live_hosts": len(result.live_hosts),
@@ -298,15 +595,34 @@ class AutonomousRunner:
                 "ports": len(result.ports),
                 "technologies": len(result.technologies),
                 "stages_completed": result.stages_completed,
+                "stages_total": result.stages_total,
+                "stages_skipped": result.stages_skipped,
+                "stage_errors": stage_errors,
             }
-            logger.info(f"Recon complete: {stats['subdomains']} subdomains, {stats['live_hosts']} live hosts")
-            return {"stats": stats}
-        except ImportError:
-            logger.warning("ReconEngine not available — skipping recon")
-            return None
+            # Per-stage failures are target-specific (unreachable domain,
+            # rate-limited API) — they belong in stats, not in the run's
+            # capability notes. Only engine-level breakage degrades the run.
+            if stage_errors:
+                logger.info(
+                    f"Recon: {len(stage_errors)} stage(s) reported errors "
+                    f"({', '.join(stage_errors)})"
+                )
+            if result.stages_total and result.stages_completed == 0:
+                logger.warning("Recon ran but completed 0 stages")
+                self._capability_notes.append(
+                    "recon: 0 stages completed (engine could not run)"
+                )
+            logger.info(
+                f"Recon complete: {stats['subdomains']} subdomains, "
+                f"{stats['live_hosts']} live hosts "
+                f"({result.stages_completed}/{result.stages_total} stages, "
+                f"{result.stages_skipped} skipped)"
+            )
+            return {"stats": stats, "stage_errors": stage_errors}
         except Exception as e:
             logger.error(f"Recon failed: {e}")
-            return None
+            self._capability_notes.append(f"recon: failed ({e})")
+            return {"stats": {}, "stage_errors": {"_engine": str(e)}}
 
     async def _run_crawl(
         self,
@@ -340,8 +656,23 @@ class AutonomousRunner:
         logger.info("Starting research loop...")
 
         if not self.llm_generate:
-            logger.error("No LLM provider configured — cannot run research")
-            return {"iterations": 0, "findings": [], "error": "No LLM provider"}
+            # Phase 6: no LLM is a *degraded* mode, not a dead end — the
+            # deterministic safe-GET backbone still runs the loop.
+            logger.warning(
+                "No LLM provider configured — running deterministic backbone"
+            )
+            # The capability probe already recorded a bare "llm: unavailable"
+            # note; enrich it in place rather than emitting a near-duplicate.
+            for i, note in enumerate(self._capability_notes):
+                if note.startswith("llm:"):
+                    self._capability_notes[i] = (
+                        "llm: unavailable (deterministic backbone running)"
+                    )
+                    break
+            else:
+                self._capability_notes.append(
+                    "llm: unavailable (deterministic backbone running)"
+                )
 
         loop_config = LoopConfig(
             max_iterations=self.config.max_iterations,
@@ -366,6 +697,8 @@ class AutonomousRunner:
             research_trace=self._research_trace,
             strategy_engine=self._strategy_engine,
             application_model=self._application_model,
+            # Phase 11: cooperative cancellation
+            cancel_event=self._cancel_event,
         )
 
         await research_loop.initialize()
@@ -378,10 +711,36 @@ class AutonomousRunner:
 
         try:
             report = await research_loop.run()
+            if report.get("cancelled"):
+                self._cancelled = True
             return report
+        except asyncio.CancelledError:
+            # Hard cancel (task cancelled externally) — mark and propagate
+            self._cancelled = True
+            raise
         except Exception as e:
             logger.error(f"Research loop failed: {e}")
             return {"iterations": 0, "findings": [], "error": str(e)}
+
+    def cancel(self) -> None:
+        """Request a graceful cancel of the running engagement (Phase 11).
+
+        The research loop finishes its current iteration, checkpoints, and
+        the run ends with status="cancelled" (resumable via `demogorgon resume`).
+        Safe to call from a signal handler or another task.
+        """
+        self._cancelled = True
+        self._cancel_requested = True
+        try:
+            self._cancel_event.set()
+        except RuntimeError:
+            # No running loop yet — the flag alone is enough
+            pass
+        logger.info("Cancel requested — stopping after current iteration")
+
+    @property
+    def cancel_requested(self) -> bool:
+        return self._cancel_requested or self._cancel_event.is_set()
 
     def _detect_chains(self, research_report: dict[str, Any]) -> list:
         """Detect attack chains from findings."""

@@ -58,8 +58,10 @@ hunt_output_*/
 reports/
 
 # ── Recon data (target-specific, huge) ─────────────────────────────────────
-recon/
-cloudflare/
+# Anchor to repo root: an unanchored "recon/" also matched the source package
+# demogorgon/recon/ and left it untracked (fresh clones had no recon engine).
+/recon/
+/cloudflare/
 
 # ── Target-specific hunt data (per-program findings, sessions, PoCs) ──────
 demogorgon/programs/abhieo/

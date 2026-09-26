@@ -1,5 +1,14 @@
 """Scope Parser — parses bug bounty program policies into structured data.
 
+The real implementation lives in :mod:`policy_parser` (section-aware, Phase 2).
+This module keeps the historical public API and thin wrappers:
+
+- ``parse_program_policy`` delegates to ``policy_parser.parse_policy``.
+- ``detect_platform`` / ``extract_program_name`` re-exported from there.
+- ``parse_scope_from_text`` and friends remain for legacy callers, but they
+  are NOT used by ``parse_program_policy`` anymore (they scrape prose and
+  mislabel excluded vuln classes as allowed).
+
 Supports raw text input from:
 - HackerOne
 - Bugcrowd
@@ -24,48 +33,14 @@ from __future__ import annotations
 import re
 from typing import Any
 from ..engagement import ScopeAsset, TestingRestriction, ProgramPolicy
-
-
-# ─── Platform Detection ──────────────────────────────────────────
-
-PLATFORM_PATTERNS = {
-    "hackerone": [
-        r"hackerone\.com",
-        r"hackerone",
-        r"program\s+page",
-    ],
-    "bugcrowd": [
-        r"bugcrowd\.com",
-        r"bugcrowd",
-        r"crowdstream",
-    ],
-    "intigriti": [
-        r"intigriti\.com",
-        r"intigriti",
-    ],
-    "yeswehack": [
-        r"yeswehack\.com",
-        r"yeswehack",
-    ],
-    "immunefi": [
-        r"immunefi\.com",
-        r"immunefi",
-    ],
-    "manual": [
-        r"^manual$",
-        r"platform:\s*manual",
-    ],
-}
-
-
-def detect_platform(text: str) -> str:
-    """Detect the bug bounty platform from the program text."""
-    text_lower = text.lower()
-    for platform, patterns in PLATFORM_PATTERNS.items():
-        for pattern in patterns:
-            if re.search(pattern, text_lower, re.MULTILINE):
-                return platform
-    return "custom"
+from .policy_parser import (
+    PLATFORM_PATTERNS,
+    VULN_CLASS_KEYWORDS,
+    RESTRICTION_PATTERNS,
+    detect_platform,
+    extract_program_name,
+    parse_policy,
+)
 
 
 # ─── Scope Parsing ───────────────────────────────────────────────
@@ -298,40 +273,8 @@ def extract_program_name(text: str) -> str:
 def parse_program_policy(text: str) -> ProgramPolicy:
     """Parse raw program policy text into a structured ProgramPolicy.
 
-    This is the main entry point for the policy parser.
-    It extracts all relevant information from the raw text.
+    Delegates to the section-aware parser (Phase 2): assets only come from
+    explicit scope sections, excluded vuln classes are recorded as forbidden,
+    and provenance/confidence is attached to every asset.
     """
-    platform = detect_platform(text)
-    program_name = extract_program_name(text)
-    
-    # Parse scope
-    in_scope = parse_scope_from_text(text)
-    
-    # Parse restrictions
-    restrictions = parse_restrictions_from_text(text)
-    
-    # Parse vulnerability classes
-    allowed_vulns, forbidden_vulns = parse_vuln_classes_from_text(text)
-    
-    # Determine account creation rules
-    account_creation_allowed = True
-    text_lower = text.lower()
-    if re.search(r"no\s+account\s+creation|account\s+creation\s+prohibited|do\s+not\s+create\s+accounts", text_lower):
-        account_creation_allowed = False
-    
-    # Determine safe harbor
-    safe_harbor = bool(re.search(r"safe\s+harbor|responsible\s+disclosure", text_lower))
-    
-    policy = ProgramPolicy(
-        program_name=program_name,
-        platform=platform,
-        in_scope=in_scope,
-        restrictions=restrictions,
-        allowed_vulnerabilities=allowed_vulns,
-        forbidden_vulnerabilities=forbidden_vulns,
-        account_creation_allowed=account_creation_allowed,
-        safe_harbor=safe_harbor,
-        raw_policy=text,
-    )
-    
-    return policy
+    return parse_policy(text)

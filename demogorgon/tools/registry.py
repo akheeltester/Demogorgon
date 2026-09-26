@@ -211,3 +211,41 @@ class ToolRegistry:
                 lines.append(f"  [{status}] {name} ({info.path or 'not found'})")
 
         return "\n".join(lines)
+
+
+def create_default_registry() -> ToolRegistry:
+    """Build a ToolRegistry with all built-in adapters registered (Phase 5).
+
+    Adapters are registered eagerly; availability is determined by
+    ``discover_all()`` (async) or per-adapter ``discover()``.
+    Missing adapter imports are skipped — a broken adapter must never
+    prevent the registry from being created.
+    """
+    registry = ToolRegistry()
+    try:
+        from .adapters import (
+            AmassAdapter,
+            FfufAdapter,
+            HttpxAdapter,
+            KatanaAdapter,
+            NmapAdapter,
+            NucleiAdapter,
+            SubfinderAdapter,
+        )
+    except ImportError as e:  # pragma: no cover — partial adapter installs
+        import logging
+        logging.getLogger(__name__).warning("Some tool adapters unavailable: %s", e)
+        return registry
+
+    for adapter_cls in (
+        SubfinderAdapter, AmassAdapter, HttpxAdapter, NucleiAdapter,
+        FfufAdapter, KatanaAdapter, NmapAdapter,
+    ):
+        try:
+            registry.register(adapter_cls())
+        except Exception as e:  # noqa: BLE001 — one bad adapter ≠ dead registry
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to register %s: %s", adapter_cls.__name__, e
+            )
+    return registry

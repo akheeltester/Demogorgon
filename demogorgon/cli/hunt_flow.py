@@ -1,6 +1,10 @@
-"""Guided hunt flow — colorful CLI onboarding.
+"""Guided hunt flow — colorful CLI onboarding, run as a strict state machine.
 
-One flow: target → scope → upload program document → authorization → hunt.
+States (each state has exactly one input function; paste mode never runs
+path validation, file mode never runs the multiline reader):
+
+    TARGET_INPUT  → SCOPE_SOURCE  →  FILE_INPUT | PASTE_INPUT | TARGET_ONLY
+                 → DOCUMENT_PARSE → SCOPE_REVIEW → AUTH_CONFIRM → HUNT_START
 
 Usage:
     demogorgon                       # guided hunt
@@ -11,6 +15,9 @@ Usage:
 from __future__ import annotations
 
 import re
+import select
+import sys
+from enum import Enum
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -24,6 +31,22 @@ BINARY_SUFFIXES = {
     ".gif", ".webp", ".exe", ".gz", ".tar",
 }
 MAX_DOC_BYTES = 5 * 1024 * 1024
+MAX_FILE_ATTEMPTS = 3
+PASTE_SENTINEL = "END"
+
+
+class HuntPhase(Enum):
+    """Explicit states of the guided hunt."""
+
+    TARGET_INPUT = "target_input"
+    SCOPE_SOURCE = "scope_source"
+    FILE_INPUT = "file_input"
+    PASTE_INPUT = "paste_input"
+    DOCUMENT_PARSE = "document_parse"
+    SCOPE_REVIEW = "scope_review"
+    AUTH_CONFIRM = "auth_confirm"
+    HUNT_START = "hunt_start"
+    ABORTED = "aborted"
 
 
 def normalize_target(raw: str) -> str:
@@ -85,6 +108,67 @@ def parse_extra_scope(raw: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
+# ── State-specific input readers ─────────────────────────────────────────
+
+def _drain_pending_stdin(timeout: float = 0.05) -> str:
+    """Return any input lines already buffered in stdin (a multi-line paste).
+
+    Prevents the classic bug where a pasted policy gets consumed as answers
+    to later prompts ("Try another path?" / extra-scope questions).
+    """
+    if not sys.stdin.isatty():
+        return ""
+    chunks: list[str] = []
+    while True:
+        ready, _, _ = select.select([sys.stdin], [], [], timeout)
+        if not ready:
+            break
+        line = sys.stdin.readline()
+        if not line:
+            break
+        chunks.append(line)
+        timeout = 0.02  # rest of the same paste arrives together
+    return "".join(chunks)
+
+
+def _prompt_file_path() -> tuple[str, str]:
+    """FILE_INPUT state reader.
+
+    Returns ("path", path) for a single-line path entry, or
+    ("paste", text) when the user pasted a whole policy into the prompt
+    (detected via buffered follow-up lines).
+    """
+    first = Prompt.ask(
+        "\n[bold cyan]📄[/bold cyan] Program document path (drag & drop, then Enter)",
+        console=console,
+    )
+    pending = _drain_pending_stdin()
+    if pending.strip():
+        return "paste", f"{first}\n{pending}".strip()
+    return "path", first
+
+
+def _read_pasted_policy() -> str:
+    """PASTE_INPUT state reader — sentinel-terminated multiline input.
+
+    Never validates paths; EOF also terminates.
+    """
+    console.print(
+        f"\nPaste the program policy. [cyan]{PASTE_SENTINEL}[/cyan] on a new "
+        "line to finish (Ctrl+D also works).\n"
+    )
+    lines: list[str] = []
+    while True:
+        try:
+            line = input()
+        except EOFError:
+            break
+        if line.strip() == PASTE_SENTINEL:
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def show_policy(policy) -> None:
     """Render a parsed ProgramPolicy as colorful tables."""
     table = info_table(
@@ -128,8 +212,15 @@ def _create_engagement(
     target: str,
     extras: list[str],
     workspace_root: str = "",
+    parsed_policy=None,
 ):
-    """Create an authorized engagement from the collected target/scope/document."""
+    """Create an authorized engagement from the collected target/scope/document.
+
+    ``parsed_policy`` (if given) is the already-parsed ProgramPolicy from the
+    DOCUMENT_PARSE state — raw text and parsed policy are kept separate:
+    the raw text is saved verbatim by the manager, the parsed policy is used
+    for scope enforcement.
+    """
     from demogorgon.core.engagement import AuthorizationStatus, EngagementStatus, ScopeAsset
     from demogorgon.core.engagement.manager import EngagementManager
 
@@ -137,7 +228,9 @@ def _create_engagement(
         EngagementManager(workspace_root=workspace_root) if workspace_root else EngagementManager()
     )
 
-    if program_text.strip():
+    if parsed_policy is not None and program_text.strip():
+        engagement = manager.create_from_parsed_policy(parsed_policy, program_text)
+    elif program_text.strip():
         engagement = manager.create_from_policy(program_text)
     else:
         engagement = manager.create_from_url(target)
@@ -148,6 +241,9 @@ def _create_engagement(
             pattern=pattern,
             asset_type="url" if pattern.startswith(("http://", "https://")) else "domain",
             source="user_input",
+            source_section="user_input",
+            inclusion_state="in_scope",
+            confidence=1.0,
             description="Added by user during guided hunt",
         ))
     if not engagement.policy.in_scope:
@@ -155,6 +251,9 @@ def _create_engagement(
             pattern=target,
             asset_type="url",
             source="user_input",
+            source_section="target_only",
+            inclusion_state="in_scope",
+            confidence=1.0,
             description="User-provided target (no assets found in document)",
         ))
 
@@ -165,7 +264,8 @@ def _create_engagement(
 
 
 async def guided_hunt(target: str | None = None) -> None:
-    """Colorful guided flow: target → scope → program document → hunt."""
+    """State-machine guided flow: target → scope → document → review → hunt."""
+    phase = HuntPhase.TARGET_INPUT
     try:
         print_banner()
         print_header("Guided Hunt")
@@ -177,7 +277,7 @@ async def guided_hunt(target: str | None = None) -> None:
             title_align="left",
         ))
 
-        # ── Step 1: target ────────────────────────────────────────
+        # ── TARGET_INPUT ───────────────────────────────────────────
         if target:
             try:
                 target = normalize_target(target)
@@ -195,7 +295,8 @@ async def guided_hunt(target: str | None = None) -> None:
             except ValueError as e:
                 console.print(f"  [red]✗ {e}[/red]")
 
-        # ── Step 2: scope source ──────────────────────────────────
+        # ── SCOPE_SOURCE ───────────────────────────────────────────
+        phase = HuntPhase.SCOPE_SOURCE
         console.print(Panel(
             "[bold white]1[/bold white]  📄  Upload program document (policy file)\n"
             "[bold white]2[/bold white]  📋  Paste program policy text\n"
@@ -208,49 +309,65 @@ async def guided_hunt(target: str | None = None) -> None:
 
         program_text = ""
         if choice == "1":
-            while True:
-                doc_path = Prompt.ask(
-                    "\n[bold cyan]📄[/bold cyan] Program document path (drag & drop, then Enter)",
-                    console=console,
-                )
+            # ── FILE_INPUT ─────────────────────────────────────────
+            phase = HuntPhase.FILE_INPUT
+            for attempt in range(MAX_FILE_ATTEMPTS):
+                kind, value = _prompt_file_path()
+                if kind == "paste":
+                    # User pasted a policy instead of a path — switch state.
+                    phase = HuntPhase.PASTE_INPUT
+                    program_text = value
+                    console.print(
+                        f"  [green]✓[/green] Pasted {len(program_text):,} characters"
+                    )
+                    break
                 try:
-                    program_text = read_program_file(doc_path)
+                    program_text = read_program_file(value)
                     console.print(f"  [green]✓[/green] Loaded {len(program_text):,} characters")
                     break
                 except (FileNotFoundError, ValueError) as e:
                     console.print(f"  [red]✗ {e}[/red]")
-                    if not Confirm.ask("  Try another path?", default=True, console=console):
-                        console.print("  [yellow]Falling back to target-only scope.[/yellow]")
-                        choice = "3"
-                        break
-        elif choice == "2":
-            console.print(
-                "\nPaste the program policy. [cyan]END[/cyan] on a new line to finish.\n"
-            )
-            lines: list[str] = []
-            while True:
-                line = input()
-                if line.strip() == "END":
+                    remaining = MAX_FILE_ATTEMPTS - attempt - 1
+                    if remaining and Confirm.ask(
+                        "  Try another path?", default=True, console=console
+                    ):
+                        continue
+                    console.print("  [yellow]Falling back to target-only scope.[/yellow]")
+                    choice = "3"
                     break
-                lines.append(line)
-            program_text = "\n".join(lines)
+            else:
+                console.print("  [yellow]Too many failed attempts — target-only scope.[/yellow]")
+                choice = "3"
+        elif choice == "2":
+            # ── PASTE_INPUT (never touches path validation) ─────────
+            phase = HuntPhase.PASTE_INPUT
+            program_text = _read_pasted_policy()
             if not program_text.strip():
                 console.print("  [yellow]No text pasted — using target-only scope.[/yellow]")
                 choice = "3"
 
+        # ── DOCUMENT_PARSE ─────────────────────────────────────────
+        phase = HuntPhase.DOCUMENT_PARSE
         policy = None
+        validation = None
         if program_text.strip():
             with console.status("[cyan]Parsing program document…[/cyan]"):
                 from demogorgon.core.scope.parser import parse_program_policy
+                from demogorgon.core.scope.validator import PolicyValidator
                 policy = parse_program_policy(program_text)
+                validation = PolicyValidator().validate(policy)
             console.print("\n[green]✓ Program parsed successfully[/green]")
             show_policy(policy)
+            for warning in validation.warnings:
+                console.print(f"  [yellow]⚠ {warning}[/yellow]")
             if not policy.in_scope:
                 console.print(
                     "  [yellow]⚠ No in-scope assets detected in the document — "
                     "the target itself will be used.[/yellow]"
                 )
 
+        # ── SCOPE_REVIEW ───────────────────────────────────────────
+        phase = HuntPhase.SCOPE_REVIEW
         extra_raw = Prompt.ask(
             "\n[bold cyan]➕[/bold cyan] Extra in-scope patterns (comma-separated, Enter to skip)",
             default="",
@@ -263,7 +380,8 @@ async def guided_hunt(target: str | None = None) -> None:
                 f"[cyan]{', '.join(extras)}[/cyan]"
             )
 
-        # ── Step 3: authorization → engagement → hunt ─────────────
+        # ── AUTH_CONFIRM ───────────────────────────────────────────
+        phase = HuntPhase.AUTH_CONFIRM
         scope_desc = (
             f"program document ({len(policy.in_scope)} assets)" if policy else "target only"
         )
@@ -284,11 +402,16 @@ async def guided_hunt(target: str | None = None) -> None:
             console=console,
         )
         if not authorized:
+            phase = HuntPhase.ABORTED
             console.print("\n[red]Authorization not confirmed — hunt not started.[/red]")
             console.print("Run [cyan]demogorgon menu[/cyan] for all commands.")
             return
 
-        engagement = _create_engagement(program_text, target, extras)
+        # ── HUNT_START ─────────────────────────────────────────────
+        phase = HuntPhase.HUNT_START
+        engagement = _create_engagement(
+            program_text, target, extras, parsed_policy=policy
+        )
 
         console.print(f"\n[green]✓ Engagement [bold]{engagement.id}[/bold] authorized[/green]")
         console.print(f"  Workspace: [dim]{engagement.workspace_dir}[/dim]\n")
@@ -297,5 +420,6 @@ async def guided_hunt(target: str | None = None) -> None:
         await _run_engagement(engagement)
     except (KeyboardInterrupt, EOFError):
         console.print(
-            "\n[yellow]Cancelled.[/yellow] Run [cyan]demogorgon menu[/cyan] for all commands."
+            f"\n[yellow]Cancelled during {phase.value.replace('_', ' ')}.[/yellow]"
+            " Run [cyan]demogorgon menu[/cyan] for all commands."
         )

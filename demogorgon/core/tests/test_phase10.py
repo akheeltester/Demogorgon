@@ -474,7 +474,12 @@ class TestLLMFailureHandling:
         assert "iterations" in report
 
     def test_runner_no_llm(self, tmp_path):
-        """Test runner with no LLM provider."""
+        """Test runner with no LLM provider.
+
+        Phase 6/9: no LLM is no longer a dead end — the deterministic
+        safe-GET backbone runs, and the status honestly reports "degraded"
+        instead of a blanket "completed".
+        """
         engagement = make_test_engagement()
 
         runner = AutonomousRunner(
@@ -484,8 +489,13 @@ class TestLLMFailureHandling:
         )
 
         result = run_async(runner.run())
-        # Should complete with error about no LLM
-        assert result.get("error") or result.get("status") == "completed"
+        assert result["status"] in ("degraded", "completed", "blocked")
+        if result["status"] == "blocked":
+            assert result.get("error")
+        else:
+            # Engine ran: capability notes must explain the degradation
+            assert any("llm" in n.lower() for n in result.get("status_notes", []))
+        assert result["iterations"] >= 0
 
 
 # ── Stagnation detection test ───────────────────────────────────
