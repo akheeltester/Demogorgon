@@ -8,6 +8,7 @@ DEPENDENCY_MISSING.  This replaces ad-hoc keyword checks scattered across
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 
 
@@ -76,6 +77,34 @@ def classify_llm_error(error: str | BaseException | None) -> LLMErrorKind:
             if marker in lowered:
                 return kind
     return LLMErrorKind.UNKNOWN
+
+
+#: `{'error': {'code': 400, 'message': 'API key not valid …'}}` and its
+#: `{"error": {"message": "…"}}` twin — Google, Azure, OpenAI-style documents.
+_MESSAGE_FIELD = re.compile(r"""['"]message['"]\s*:\s*['"](.+?)['"]""")
+
+
+def summarize_llm_error(
+    error: str | BaseException | None, limit: int = 300
+) -> str:
+    """Reduce a raw provider error to one readable line.
+
+    Providers return a whole error document — Google's INVALID_ARGUMENT is a
+    nested dict with `details`, `@type` and two copies of the message — which
+    reads as noise when the setup wizard prints it.  Extract the human
+    ``message`` field when present, then cap the length.
+    """
+    if error is None:
+        return ""
+    text = str(error).strip()
+    if not text:
+        return ""
+    match = _MESSAGE_FIELD.search(text)
+    if match:
+        text = match.group(1).strip()
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return text
 
 
 #: Which kinds the manager should retry (same provider).

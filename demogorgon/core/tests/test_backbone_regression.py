@@ -1058,6 +1058,61 @@ class TestHealthCheckDetail:
         assert "google-genai" in health["connectivity"]
         assert "google-genai" in health["error"]
 
+    def test_health_check_summarizes_google_error_document(self):
+        """Google returns a nested dict with `details`/`@type` — extract the
+        human message instead of dumping the whole blob into the wizard."""
+        from demogorgon.llm.errors import summarize_llm_error
+
+        blob = (
+            "400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': "
+            "'API key not valid. Please pass a valid API key.', "
+            "'status': 'INVALID_ARGUMENT', 'details': [{'@type': "
+            "'type.googleapis.com/google.rpc.ErrorInfo', 'reason': "
+            "'API_KEY_INVALID'}]}}"
+        )
+        assert summarize_llm_error(blob) == (
+            "API key not valid. Please pass a valid API key."
+        )
+
+    def test_health_check_summarizes_json_error_document(self):
+        from demogorgon.llm.errors import summarize_llm_error
+
+        blob = '{"error": {"code": 401, "message": "Incorrect API key provided"}}'
+        assert summarize_llm_error(blob) == "Incorrect API key provided"
+
+    def test_health_check_summarize_keeps_plain_errors_and_caps_length(self):
+        from demogorgon.llm.errors import summarize_llm_error
+
+        assert summarize_llm_error("connection reset by peer") == (
+            "connection reset by peer"
+        )
+        assert summarize_llm_error(None) == ""
+        assert summarize_llm_error("   ") == ""
+        long = "x" * 500
+        out = summarize_llm_error(long, limit=50)
+        assert len(out) == 50 and out.endswith("…")
+
+    def test_health_check_message_is_readable_end_to_end(self):
+        """Provider whose generate() returns Google's raw error document."""
+        from demogorgon.llm.base import LLMProvider, LLMResponse
+
+        raw = (
+            "400 INVALID_ARGUMENT. {'error': {'code': 400, 'message': "
+            "'API key not valid. Please pass a valid API key.'}}"
+        )
+
+        class G(LLMProvider):
+            name = "g"
+            models = ["m"]
+
+            async def generate(self, messages, model=None, temperature=0.1,
+                               max_tokens=4096, response_format=None):
+                return LLMResponse(content="", error=raw)
+
+        assert run_async(G().health_check()) == (
+            "API key not valid. Please pass a valid API key."
+        )
+
     def test_connection_probe_reports_sdk_reason(self, monkeypatch):
         from demogorgon.config import model_discovery
         from demogorgon.llm import manager as mgr_mod

@@ -10,6 +10,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
+from .errors import summarize_llm_error
+
 
 @dataclass
 class LLMResponse:
@@ -57,7 +59,7 @@ class LLMProvider(ABC):
                 max_tokens=10,
             )
         except Exception as e:  # noqa: BLE001 - surface any provider failure
-            return str(e) or type(e).__name__
+            return summarize_llm_error(e) or type(e).__name__
         if resp.error:
-            return resp.error
+            return summarize_llm_error(resp.error)
         return None

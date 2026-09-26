@@ -5,10 +5,17 @@ Requires: pip install google-genai
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 
 from demogorgon.llm.base import LLMProvider, LLMResponse
+from demogorgon.llm.errors import summarize_llm_error
+
+# google-genai logs a one-shot "use Chat.send_message instead of
+# generate_content" advisory on EVERY first call. It is not actionable for us
+# and pollutes wizard/doctor output, so keep that logger at error level.
+logging.getLogger("google_genai.models").setLevel(logging.ERROR)
 
 
 @dataclass
@@ -94,4 +101,5 @@ class GeminiProvider(LLMProvider):
                 error="google-genai package not installed. Run: pip install google-genai",
             )
         except Exception as e:
-            return LLMResponse(content="", error=str(e))
+            # google-genai wraps everything in a nested error document
+            return LLMResponse(content="", error=summarize_llm_error(e))
